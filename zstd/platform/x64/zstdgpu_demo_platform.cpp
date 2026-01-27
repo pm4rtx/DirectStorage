@@ -1,0 +1,182 @@
+/**
+ * Copyright (c) Microsoft. All rights reserved.
+ * This code is licensed under the MIT License (MIT).
+ * THIS CODE IS PROVIDED *AS IS* WITHOUT WARRANTY OF
+ * ANY KIND, EITHER EXPRESS OR IMPLIED, INCLUDING ANY
+ * IMPLIED WARRANTIES OF FITNESS FOR A PARTICULAR
+ * PURPOSE, MERCHANTABILITY, OR NON-INFRINGEMENT.
+ *
+ * Advanced Technology Group (ATG)
+ * Author(s):   Pavel Martishevsky (pamartis@microsoft.com)
+ */
+
+#include <stdint.h>
+#include <stdio.h>
+
+#include <winsdkver.h>
+#define _WIN32_WINNT 0x0A00
+#include <sdkddkver.h>
+
+#define NOMINMAX
+#define NODRAWTEXT
+#define NOGDI
+#define NOBITMAP
+#define NOMCX
+#define NOSERVICE
+#define NOHELP
+#include <Windows.h>
+
+#include <d3d12.h>
+#include <dxgi1_6.h>
+#include <dxgidebug.h>
+
+#define D3D12AID_CMD_QUEUE_LATENCY_FRAME_MAX_COUNT 2
+#define D3D12AID_API_STATIC 1
+#include <d3d12aid.h>
+
+#include "platform/zstdgpu_demo_platform.h"
+
+static bool Gd3dDbg = false;
+
+ID3D12Device *zstdgpu_Demo_PlatformInit(uint32_t gpuVenId, uint32_t gpuDevId, bool d3dDbg)
+{
+    // Default main thread to CPU 0
+    SetThreadAffinityMask(GetCurrentThread(), 0x1);
+    Gd3dDbg = d3dDbg;
+
+    if (Gd3dDbg)
+    {
+        #define LOAD_F(funName, libName)                        \
+            decltype(funName) *fn##funName = NULL;              \
+            do                                                  \
+            {                                                   \
+                HMODULE lib = GetModuleHandleW(libName);        \
+                if (NULL == lib)                                \
+                    lib = LoadLibraryW(libName);                \
+                if (NULL != lib)                                \
+                    fn##funName = (decltype(funName) *)GetProcAddress(lib, #funName);\
+            }                                                   \
+            while(0)
+
+        LOAD_F(DXGIGetDebugInterface, L"dxgidebug.dll");
+        LOAD_F(D3D12GetDebugInterface, L"d3d12.dll");
+
+        if (NULL != fnD3D12GetDebugInterface)
+        {
+            ID3D12Debug1 *d3d12Debug1 = NULL;
+            D3D12AID_CHECK(fnD3D12GetDebugInterface(D3D12AID_IID_PPV_ARGS(&d3d12Debug1)));
+            d3d12Debug1->EnableDebugLayer();
+            d3d12Debug1->SetEnableGPUBasedValidation(TRUE);
+            //d3d12Debug1->SetEnableSynchronizedCommandQueueValidation(FALSE /* otherwise enabled by default */);
+            D3D12AID_SAFE_RELEASE(d3d12Debug1);
+        }
+
+        if (NULL != fnDXGIGetDebugInterface)
+        {
+            IDXGIDebug1 *dxgiDebug1 = NULL;
+            D3D12AID_CHECK(fnDXGIGetDebugInterface(D3D12AID_IID_PPV_ARGS(&dxgiDebug1)));
+            dxgiDebug1->EnableLeakTrackingForThread();
+            D3D12AID_SAFE_RELEASE(dxgiDebug1);
+
+            IDXGIInfoQueue *dxgiInfoQueue = NULL;
+            D3D12AID_CHECK(fnDXGIGetDebugInterface(D3D12AID_IID_PPV_ARGS(&dxgiInfoQueue)));
+            dxgiInfoQueue->SetBreakOnSeverity(DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+            dxgiInfoQueue->SetBreakOnSeverity(DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_ERROR, TRUE);
+            dxgiInfoQueue->SetBreakOnSeverity(DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_WARNING, TRUE);
+            dxgiInfoQueue->SetBreakOnSeverity(DXGI_DEBUG_ALL, DXGI_INFO_QUEUE_MESSAGE_SEVERITY_MESSAGE, TRUE);
+            dxgiInfoQueue->ClearStorageFilter(DXGI_DEBUG_ALL);
+            dxgiInfoQueue->ClearRetrievalFilter(DXGI_DEBUG_ALL);
+            D3D12AID_SAFE_RELEASE(dxgiInfoQueue);
+        }
+    }
+
+    IDXGIFactory6 *factory = NULL;
+    IDXGIAdapter *adapter = NULL;
+    ID3D12Device *device = NULL;
+    D3D12AID_CHECK(CreateDXGIFactory2(0, D3D12AID_IID_PPV_ARGS(&factory)));
+    for (unsigned i = 0; DXGI_ERROR_NOT_FOUND != factory->EnumAdapters(i, &adapter); ++i)
+    {
+        DXGI_ADAPTER_DESC desc;
+        D3D12AID_CHECK(adapter->GetDesc(&desc));
+
+        bool matchDevId = ~0u == gpuDevId || gpuDevId == desc.DeviceId; /** Consider DeviceId a match if requested one is ~0 meaning 'dont care' or == desc.DeviceId */
+        bool firstVenId = gpuVenId != desc.VendorId && 0x1414 == gpuVenId; /** This condition may seem strange, but when gpuVenId is set to 0x1414 -- it means find anything except 0x1414 */
+        bool matchVenId = gpuVenId == desc.VendorId;
+
+        if ((firstVenId && matchDevId) || (matchVenId && matchDevId))
+        {
+            D3D12AID_CHECK(D3D12CreateDevice(adapter, D3D_FEATURE_LEVEL_12_0, D3D12AID_IID_PPV_ARGS(&device)));
+            adapter->Release();
+            factory->Release();
+
+            if (Gd3dDbg)
+            {
+                ID3D12InfoQueue1 *d3d12InfoQueue1 = NULL;
+                device->QueryInterface(D3D12AID_IID_PPV_ARGS(&d3d12InfoQueue1));
+
+                d3d12InfoQueue1->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+                d3d12InfoQueue1->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+                d3d12InfoQueue1->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, TRUE);
+                d3d12InfoQueue1->ClearRetrievalFilter();
+                d3d12InfoQueue1->ClearStorageFilter();
+                d3d12InfoQueue1->SetMuteDebugOutput(FALSE);
+
+                // Disable State Creation message category
+                D3D12_MESSAGE_CATEGORY disableCategoryList [] = { D3D12_MESSAGE_CATEGORY_STATE_CREATION };
+                D3D12_INFO_QUEUE_FILTER filter = {};
+                filter.DenyList.pCategoryList = disableCategoryList;
+                filter.DenyList.NumCategories = _countof(disableCategoryList);
+                d3d12InfoQueue1->PushStorageFilter(&filter);
+                d3d12InfoQueue1->PushRetrievalFilter(&filter);
+                D3D12AID_SAFE_RELEASE(d3d12InfoQueue1);
+            }
+            return device;
+        }
+        adapter->Release();
+    }
+    factory->Release();
+    return NULL;
+}
+
+void zstdgpu_Demo_PlatformTerm(struct ID3D12Device *device)
+{
+    if (Gd3dDbg)
+    {
+        ID3D12DebugDevice1 *d3d12DebugDevice1 = NULL;
+        ID3D12InfoQueue1 *d3d12InfoQueue1 = NULL;
+        device->QueryInterface(D3D12AID_IID_PPV_ARGS(&d3d12DebugDevice1));
+        device->QueryInterface(D3D12AID_IID_PPV_ARGS(&d3d12InfoQueue1));
+
+        // NOTE: Because the below ReportLiveDeviceObjects always reports refcount==1 for device object due to self-reference, we temporally disable "breaks on warning"
+        //       the fact that it's (likely) a self-reference can be verified by reporting live objects right after device and debug device creation.
+        d3d12InfoQueue1->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, FALSE);
+
+        // NOTE: Pop previously set filters to make sure State Creation messages are visible after ReportLiveDeviceObjects, and report that all live objects gets destroyed upon
+        //       d3d12DebugDevice1 release
+        d3d12InfoQueue1->PopStorageFilter();
+        d3d12InfoQueue1->PopRetrievalFilter();
+        D3D12AID_SAFE_RELEASE(d3d12InfoQueue1);
+
+        d3d12DebugDevice1->ReportLiveDeviceObjects(D3D12_RLDO_DETAIL);
+        D3D12AID_SAFE_RELEASE(d3d12DebugDevice1);
+
+        IDXGIDebug *dxgiDebug = NULL;
+        LOAD_F(DXGIGetDebugInterface, L"dxgidebug.dll");
+        D3D12AID_CHECK(fnDXGIGetDebugInterface(D3D12AID_IID_PPV_ARGS(&dxgiDebug)));
+        dxgiDebug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_ALL);
+
+        D3D12AID_SAFE_RELEASE(device);
+
+        dxgiDebug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_ALL);
+        D3D12AID_SAFE_RELEASE(dxgiDebug);
+    }
+    else
+    {
+        D3D12AID_SAFE_RELEASE(device);
+    }
+}
+
+uint32_t zstdgpu_Demo_PlatformTick(void)
+{
+    return 1;
+}
