@@ -398,7 +398,7 @@ static inline void zstdgpu_ShaderEntry_ParseFrames(ZSTDGPU_PARAM_INOUT(zstdgpu_P
                 frameInfo.cmpBlockStart = srt.inoutPerFrameBlockCountCMP[threadId];
 
                 frameInfo.rawBlockBytesStart = srt.inoutPerFrameBlockSizesRAW[threadId];
-                frameInfo.rleBlockBytesStart = srt.inoutPerFrameBlockCountRLE[threadId];
+                frameInfo.rleBlockBytesStart = srt.inoutPerFrameBlockSizesRLE[threadId];
             }
 
             zstdgpu_ShaderEntry_ParseFrame(
