@@ -99,7 +99,7 @@ void zstdgpu_ReferenceStore_FreeMemory(void)
     zstdgpu_ResourceDataCpu_Term(&GZstd);
 }
 
-static uint32_t zstdgpu_SetLastBlockSize(uint32_t size)
+static uint32_t zstdgpu_GetLastBlockIndex(void)
 {
     const uint32_t allBlockCount = GBlockIndexRAW
                                  + GBlockIndexRLE
@@ -107,7 +107,12 @@ static uint32_t zstdgpu_SetLastBlockSize(uint32_t size)
 
     ZSTDGPU_ASSERT(allBlockCount >= 1u);
 
-    const uint32_t lastBlockIndex = allBlockCount - 1u;
+    return allBlockCount - 1u;
+}
+
+static uint32_t zstdgpu_SetLastBlockSize(uint32_t size)
+{
+    const uint32_t lastBlockIndex = zstdgpu_GetLastBlockIndex();
     GZstd.BlockSizePrefix[lastBlockIndex] = size;
 
     if (lastBlockIndex >= 1)
@@ -119,12 +124,7 @@ static uint32_t zstdgpu_SetLastBlockSize(uint32_t size)
 
 static void zstdgpu_AppendLastBlockSize(uint32_t size)
 {
-    const uint32_t allBlockCount = GBlockIndexRAW
-                                 + GBlockIndexRLE
-                                 + GBlockIndexCMP;
-    ZSTDGPU_ASSERT(allBlockCount >= 1u);
-
-    GZstd.BlockSizePrefix[allBlockCount - 1u] += size;
+    GZstd.BlockSizePrefix[zstdgpu_GetLastBlockIndex()] += size;
 }
 
 
@@ -490,10 +490,13 @@ void zstdgpu_ReferenceStore_Report_CompressedSequences(const void *base, uint32_
 
     GZstd.PerSeqStreamSeqStart[i] = GSequenceCount;
 
-    GZstd.SeqRefs[i].fseLLen = GZstd.CompressedBlocks[GBlockIndexCMP - 1].fseTableIndexLLen;
-    GZstd.SeqRefs[i].fseOffs = GZstd.CompressedBlocks[GBlockIndexCMP - 1].fseTableIndexOffs;
-    GZstd.SeqRefs[i].fseMLen = GZstd.CompressedBlocks[GBlockIndexCMP - 1].fseTableIndexMLen;
-    GZstd.CompressedBlocks[GBlockIndexCMP - 1].seqStreamIndex = i;
+    const uint32_t blockId = zstdgpu_GetLastBlockIndex();
+    const uint32_t cmpBlockId = GBlockIndexCMP - 1;
+    GZstd.SeqRefs[i].fseLLen = GZstd.CompressedBlocks[cmpBlockId].fseTableIndexLLen;
+    GZstd.SeqRefs[i].fseOffs = GZstd.CompressedBlocks[cmpBlockId].fseTableIndexOffs;
+    GZstd.SeqRefs[i].fseMLen = GZstd.CompressedBlocks[cmpBlockId].fseTableIndexMLen;
+    GZstd.SeqRefs[i].blockId = blockId;
+    GZstd.CompressedBlocks[cmpBlockId].seqStreamIndex = i;
 }
 
 __pragma(warning(push))
