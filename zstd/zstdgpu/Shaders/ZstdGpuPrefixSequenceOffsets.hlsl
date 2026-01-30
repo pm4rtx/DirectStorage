@@ -80,7 +80,8 @@ void main(uint i : SV_DispatchThreadId)
 
     // NOTE(pamartis): for every first in zstd frame compressed block that contains non-zero sequence count, convert "final" offsets
     // into "non-repeat" offsets (if they're re-encoded "repeat" offsets)
-    if (seqStreamIdxFirstInFrame != ~0u && seqStreamIdxFirstInFrame == i)
+    const bool isFirstSequenceStreamInFrame = seqStreamIdxFirstInFrame != ~0u && seqStreamIdxFirstInFrame == i;
+    if (isFirstSequenceStreamInFrame)
     {
         const uint32_t3 b = uint32_t3(1, 4, 8) + 3;
 
@@ -283,5 +284,16 @@ void main(uint i : SV_DispatchThreadId)
         ZstdPerSeqStreamFinalOffset1[i] = p.x;
         ZstdPerSeqStreamFinalOffset2[i] = p.y;
         ZstdPerSeqStreamFinalOffset3[i] = p.z;
+    }
+    // NOTE(pamartis): Added this condition to make sure the first sequence stream ('i') in the frame
+    // always updates its "final" offsets even if 'needsPropagationAfterLookback' is set to 'false'.
+    // 'needsPropagationAfterLookback' can be set to 'false' by the condition at the top of the shader entry
+    // checking that all offsets are "non-encoded", but at the same time offsets of the first sequence stream ('i')
+    // in the frame could have been modified from "encoded" to "non-encoded", so they have to be stored back
+    else if (isFirstSequenceStreamInFrame)
+    {
+        ZstdPerSeqStreamFinalOffset1[i] = o.x;
+        ZstdPerSeqStreamFinalOffset2[i] = o.y;
+        ZstdPerSeqStreamFinalOffset3[i] = o.z;
     }
 }
