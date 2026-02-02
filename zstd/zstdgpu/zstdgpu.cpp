@@ -39,7 +39,9 @@
 #include "ZstdGpuDecodeHuffmanWeights.h"
 #include "ZstdGpuDecompressHuffmanWeights.h"
 #include "ZstdGpuDecompressSequences.h"
-#include "ZstdGpuExecuteSequences.h"
+#include "ZstdGpuExecuteSequences128.h"
+#include "ZstdGpuExecuteSequences64.h"
+#include "ZstdGpuExecuteSequences32.h"
 #include "ZstdGpuFinaliseSequenceOffsets.h"
 #include "ZstdGpuGroupCompressedLiterals.h"
 #include "ZstdGpuInitFseTable.h"
@@ -278,7 +280,9 @@ static void zstdgpu_ReCreate_SRTs(zstdgpu_SRTs & srts, ID3D12Device *device, con
     ZSTDGPU_KERNEL(DecodeHuffmanWeights                     , L"Decode (from nibbles) Uncompressed Huffman Weights")                \
     ZSTDGPU_KERNEL(DecompressHuffmanWeights                 , L"Decompress FSE-compressed Huffman Weights")                         \
     ZSTDGPU_KERNEL(DecompressSequences                      , L"Decompress Sequences")                                              \
-    ZSTDGPU_KERNEL(ExecuteSequences                         , L"Execute Sequences")                                                 \
+    ZSTDGPU_KERNEL(ExecuteSequences128                      , L"Execute Sequences 128")                                             \
+    ZSTDGPU_KERNEL(ExecuteSequences64                       , L"Execute Sequences 64")                                              \
+    ZSTDGPU_KERNEL(ExecuteSequences32                       , L"Execute Sequences 32")                                              \
     ZSTDGPU_KERNEL(FinaliseSequenceOffsets                  , L"Finalise Sequence Offsets")                                         \
     ZSTDGPU_KERNEL(GroupCompressedLiterals                  , L"Group Huffman-compressed Literals")                                 \
     ZSTDGPU_KERNEL(InitFseTable                             , L"Init Fse Table")                                                    \
@@ -321,6 +325,7 @@ struct zstdgpu_PerRequestContextImpl
     #define ZSTDGPU_KERNEL(name, desc) d3d12aid_ComputeRsPs name;
         ZSTDGPU_KERNEL_LIST()
     #undef ZSTDGPU_KERNEL
+    d3d12aid_ComputeRsPs    ExecuteSequences;
 
     zstdgpu_SRTs            srts;
     zstdgpu_ResourceDataGpu resData;
@@ -473,6 +478,24 @@ zstdgpu_Status zstdgpu_CreatePerRequestContext(zstdgpu_PerRequestContext *outPer
             context->name.ps->AddRef();
             ZSTDGPU_KERNEL_LIST()
         #undef ZSTDGPU_KERNEL
+#ifdef _GAMING_XBOX_SCARLETT
+        context->ExecuteSequences = context->ExecuteSequences64;
+#else
+        if (persistentContext->maxLaneCount == 128)
+        {
+            context->ExecuteSequences = context->ExecuteSequences128;
+        }
+        else if (persistentContext->maxLaneCount == 64)
+        {
+            context->ExecuteSequences = context->ExecuteSequences64;
+        }
+        else
+        {
+            context->ExecuteSequences = context->ExecuteSequences32;
+        }
+#endif
+        context->ExecuteSequences.rs->AddRef();
+        context->ExecuteSequences.ps->AddRef();
 
         context->srts.heap = NULL;
         context->srts.heapOffset = 0;
@@ -528,6 +551,7 @@ zstdgpu_Status zstdgpu_DestroyPerRequestContext(void **outMemoryBlock, uint32_t 
 
         D3D12AID_SAFE_RELEASE(inPerRequestContext->srts.heap);
 
+        d3d12aid_ComputeRsPs_Release(&inPerRequestContext->ExecuteSequences);
         #define ZSTDGPU_KERNEL(name, desc) d3d12aid_ComputeRsPs_Release(&inPerRequestContext->name);
             ZSTDGPU_KERNEL_LIST()
         #undef ZSTDGPU_KERNEL

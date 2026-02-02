@@ -28,7 +28,9 @@ ZSTDGPU_EXECUTE_SEQUENCES_SRT()
 #undef ZSTDGPU_RW_BUFFER_DECL
 #undef ZSTDGPU_RO_BUFFER_DECL
 
-#define MAX_COPY_SIZE 1024
+#ifndef MAX_COPY_SIZE
+#define MAX_COPY_SIZE 32
+#endif
 
 [RootSignature("DescriptorTable(SRV(t0, numDescriptors=13), UAV(u0, numDescriptors=1))")]
 [numthreads(MAX_COPY_SIZE, 1, 1)]
