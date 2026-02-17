@@ -87,6 +87,14 @@
 #   endif
 #endif
 
+#ifndef ZSTDGPU_RO_BYTE_BUFFER
+#   ifdef __hlsl_dx_compiler
+#       define ZSTDGPU_RO_RAW_BUFFER(type) ByteAddressBuffer /* no type, it's opaquue in HLSL side */
+#   else
+#       define ZSTDGPU_RO_RAW_BUFFER(type) const type *
+#   endif
+#endif
+
 #ifndef ZSTDGPU_PARAM_IN
 #   ifdef __hlsl_dx_compiler
 #       define ZSTDGPU_PARAM_IN(type) in type
@@ -359,6 +367,17 @@ static inline void InterlockedAdd(uint32_t & dst, uint32_t x, uint32_t & ret) { 
 static inline void InterlockedCompareStore(uint32_t & dst, uint32_t compare, uint32_t x) { if (dst == compare) dst = x; }
 #endif
 
+static inline uint64_t zstdgpu_RawLoadU64AtByteOffset(ZSTDGPU_RO_RAW_BUFFER(uint32_t) buffer, uint32_t offset)
+{
+#ifdef __hlsl_dx_compiler
+    uint2 v = buffer.Load2(offset);
+    return v.x | (uint64_t(v.y) << 32);
+#else
+    const uint32_t* p32 = reinterpret_cast<const uint32_t*>(reinterpret_cast<const char*>(buffer) + offset);
+    return p32[0] | (uint64_t(p32[1]) << 32);
+#endif
+}
+
 static inline uint32_t zstdgpu_BitFieldExtractU32(uint32_t x, uint32_t start, uint32_t count)
 {
     const uint32_t mask = ~(~0u << count);
@@ -460,6 +479,15 @@ static inline uint32_t zstdgpu_MinU32(uint32_t a, uint32_t b)
 }
 
 static inline uint32_t zstdgpu_MaxU32(uint32_t a, uint32_t b)
+{
+#ifdef __hlsl_dx_compiler
+    return max(a, b);
+#else
+    return a > b ? a : b;
+#endif
+}
+
+static inline uint32_t zstdgpu_MaxI32(int32_t a, int32_t b)
 {
 #ifdef __hlsl_dx_compiler
     return max(a, b);
@@ -975,6 +1003,110 @@ static inline uint32_t zstdgpu_Backward_BitBuffer_V0_Get_Huffman(ZSTDGPU_PARAM_I
     return result;
 }
 
+// NOTE(jweinste): Backwards bitstream that loads aligned 64-bit elements (instead of 32-bit elements) per-lane needing refill.
+struct zstdgpu_HuffmanStream
+{
+    ZSTDGPU_RO_RAW_BUFFER(uint32_t) buffer;
+    uint32_t finalByteOffset;
+    uint32_t lastByteOffset;
+
+    uint32_t dataSpare;
+    uint32_t numBitsSpare; // always strictly < maxBitsPerCode
+
+    // Available bits are stored against the high-end of the U64.
+    // This initially felt natural since the bitstream is read from MSB to LSB,
+    // and it allows for Peek() to not need a 64-bit shift (although there might be more ALU elsewhere).
+    //
+    // Example: if there is one 5-bit code left (numBits0 = 5) with value 0b11111, then data0 = 0xF800'0000'0000'0000 (not 0x1F).
+    //
+    // @last_peek: On the (potentially more than just the) last call to RefillAndPeek(), there might be < maxBitsPerCode available
+    // (only the actual number of bits for the last code), but every U64 that at contains at least one useful byte would already have
+    // been loaded. When that last U64 is read (which may be in InitWithSegment()), we set numBits0 to UINT_MAX so the next
+    // (and any subsequent reasonable amount) of RefillAndPeek() do not emit a load.
+    uint64_t data0;
+    uint32_t numBits0;
+
+    uint32_t maxBitsPerCode;
+    uint32_t _32MinusMaxBitsPerCode;
+};
+
+static inline void zstdgpu_HuffmanStream_InitWithSegment(ZSTDGPU_PARAM_INOUT(zstdgpu_HuffmanStream) stream, ZSTDGPU_RO_RAW_BUFFER(uint32_t) buffer, ZSTDGPU_PARAM_IN(zstdgpu_OffsetAndSize) segment, ZSTDGPU_PARAM_IN(uint32_t) maxBitsPerCode)
+{
+    // NOTE(jweinste): we could just load a single DWORD here to reduce codesize/ALU here in InitWithSegment(),
+    // but we want to ensure that the DWORDx2 loads in RefillAndPeek() are 8-byte aligned.
+    // Alignment might improve cache behavior, but it is mainly to potentially limit how many "OOB" bytes we read.
+
+    const uint32_t lastByteIdx = (segment.offs + segment.size) - 1; // Byte index containing the flag.
+    const uint32_t finalByteOffsetForU64 = segment.offs & -8;
+    const uint32_t lastByteOffsetForU64 = lastByteIdx & -8;
+    uint64_t data64 = zstdgpu_RawLoadU64AtByteOffset(buffer, lastByteOffsetForU64);
+
+    // How many extra bytes we read.
+    const uint32_t oobByteCount = 7 - (lastByteIdx & 7);
+    // Shift left by [0:56] to put the byte with the flag on top.
+    const uint32_t oobBitCount = oobByteCount * 8;
+    data64 <<= oobBitCount;
+    // Count number of leading zero bits above the flag (result in [0:7]).
+    // There is no 64-bit version of v_clz_i32_u32 and uint32_t(data64 >> 32) is free since U64 is a pair of VGPRs.
+    // Add one (reverse-subtract by 32, not 31) to also shift out the flag itself.
+    const uint32_t nonDataBitCount = 32 - zstdgpu_FindFirstBitHiU32(uint32_t(data64 >> 32));
+    data64 <<= nonDataBitCount;
+    const uint32_t keptBitCount = 64 - (oobBitCount + nonDataBitCount); // could be 0
+
+    stream.buffer          = buffer;
+    stream.finalByteOffset = finalByteOffsetForU64;
+    stream.lastByteOffset  = lastByteOffsetForU64;
+
+    stream.dataSpare    = 0;
+    stream.numBitsSpare = 0;
+
+    stream.data0    = data64;
+    stream.numBits0 = (finalByteOffsetForU64 == lastByteOffsetForU64) ? uint32_t(-1) : keptBitCount; // see @last_peek comment
+
+    stream.maxBitsPerCode         = maxBitsPerCode;
+    stream._32MinusMaxBitsPerCode = 32 - maxBitsPerCode;
+
+    ZSTDGPU_ASSERT(1 <= maxBitsPerCode && maxBitsPerCode <= 11);
+}
+
+static inline uint32_t zstdgpu_HuffmanStream_RefillAndPeek(ZSTDGPU_PARAM_INOUT(zstdgpu_HuffmanStream) stream)
+{
+    // Need refill?
+    if (stream.numBits0 < stream.maxBitsPerCode)
+    {
+        ZSTDGPU_ASSERT(stream.numBitsSpare == 0);
+        ZSTDGPU_ASSERT(((stream.finalByteOffset | stream.lastByteOffset) & 7) == 0);
+        ZSTDGPU_ASSERT(stream.finalByteOffset < stream.lastByteOffset);
+        // Do refill.
+        const uint32_t loadByteOffset = stream.lastByteOffset - sizeof(uint64_t);
+        stream.dataSpare      = uint32_t(stream.data0 >> 32);
+        stream.numBitsSpare   = stream.numBits0;
+        stream.lastByteOffset = loadByteOffset;
+        stream.data0          = zstdgpu_RawLoadU64AtByteOffset(stream.buffer, loadByteOffset);
+        stream.numBits0       = (stream.finalByteOffset == loadByteOffset) ? uint32_t(-1) : 64; // see @last_peek comment
+    }
+
+    // Do Peek.
+    const uint32_t k = stream._32MinusMaxBitsPerCode;
+    const uint32_t data0_hiShift = k + stream.numBitsSpare;
+    const uint32_t data0_hi = uint32_t(stream.data0 >> 32); // High U32 extract is free. U64 shift slower than U32. maxBitsPerCode <= 11.
+    ZSTDGPU_ASSERT(data0_hiShift < 32u);
+    return (stream.dataSpare >> k) | (data0_hi >> data0_hiShift);
+}
+
+static inline void zstdgpu_HuffmanStream_Consume(ZSTDGPU_PARAM_INOUT(zstdgpu_HuffmanStream) stream, ZSTDGPU_PARAM_IN(int) actualBitCount)
+{
+    ZSTDGPU_ASSERT(stream.maxBitsPerCode >= uint32_t(actualBitCount));
+
+    int ns = stream.numBitsSpare;
+    uint32_t data0Consumed = zstdgpu_MaxI32(0, actualBitCount - ns);
+    stream.numBitsSpare    = zstdgpu_MaxI32(0, ns - actualBitCount);
+    stream.dataSpare <<= actualBitCount;
+
+    stream.numBits0 -= data0Consumed;
+    stream.data0 <<= data0Consumed;
+}
+
 static inline void zstdgpu_Backward_BitBuffer_Init(ZSTDGPU_PARAM_INOUT(zstdgpu_Backward_BitBuffer) outBitBuffer, ZSTDGPU_RO_BUFFER(uint32_t) buffer, ZSTDGPU_PARAM_IN(zstdgpu_OffsetAndSize) segment)
 {
     const uint32_t endbyte = segment.offs + segment.size - 1u;
@@ -1354,7 +1486,7 @@ static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockC
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , Counters                      , 2)    \
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , LitStreamRemap                , 3)    \
     ZSTDGPU_RO_BUFFER_DECL(zstdgpu_LitStreamInfo                , LitRefs                       , 4)    \
-    ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , CompressedData                , 5)    \
+    ZSTDGPU_RO_RAW_BUFFER_DECL(uint32_t                         , CompressedData                , 5)    \
     \
     ZSTDGPU_RO_TYPED_BUFFER_DECL(uint32_t, uint8_t              , DecompressedHuffmanWeights    , 6)    \
     ZSTDGPU_RO_TYPED_BUFFER_DECL(uint32_t, uint8_t              , DecompressedHuffmanWeightCount, 7)    \
@@ -1367,7 +1499,7 @@ static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockC
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , Counters                      , 2)    \
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , LitStreamRemap                , 3)    \
     ZSTDGPU_RO_BUFFER_DECL(zstdgpu_LitStreamInfo                , LitRefs                       , 4)    \
-    ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , CompressedData                , 5)    \
+    ZSTDGPU_RO_RAW_BUFFER_DECL(uint32_t                         , CompressedData                , 5)    \
     \
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , HuffmanTableInfo              , 6)    \
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , HuffmanTableCodeAndSymbol     , 7)    \
@@ -1460,6 +1592,7 @@ static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockC
     ZSTDGPU_SRT(ExecuteSequences                        , ZSTDGPU_EXECUTE_SEQUENCES_SRT())                          \
     ZSTDGPU_SRT(ComputeDestSequenceOffsets              , ZSTDGPU_COMPUTE_DEST_SEQUENCE_OFFSETS_SRT())
 
+#define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index)                  ZSTDGPU_RO_RAW_BUFFER(type)                in##name;
 #define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                      ZSTDGPU_RO_BUFFER(type)                    in##name;
 #define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                      ZSTDGPU_RW_BUFFER(type)                    inout##name;
 #define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index)                  ZSTDGPU_RW_BUFFER_GLC(type)                inout##name;
@@ -1559,5 +1692,6 @@ typedef struct zstdgpu_ComputeDestSequenceOffsets_SRT
 #undef ZSTDGPU_RW_BUFFER_DECL_GLC
 #undef ZSTDGPU_RW_BUFFER_DECL
 #undef ZSTDGPU_RO_BUFFER_DECL
+#undef ZSTDGPU_RO_RAW_BUFFER_DECL
 
 #endif // #define ZSTDGPU_STRUCTS_H
