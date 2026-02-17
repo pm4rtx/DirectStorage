@@ -27,13 +27,9 @@ struct Consts
 
 ConstantBuffer<Consts> Constants : register(b0);
 
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index) ZSTDGPU_RO_BUFFER(type) ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index) ZSTDGPU_RW_BUFFER(type) ZstdInOut##name : register(u##index);
-
+#include "../zstdgpu_srt_decl_bind.h"
 ZSTDGPU_FINALISE_SEQUENCE_OFFSETS_SRT()
-
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
+#include "../zstdgpu_srt_decl_undef.h"
 
 [RootSignature("DescriptorTable(SRV(t0, numDescriptors=8), UAV(u0, numDescriptors=1)), RootConstants(b0, num32BitConstants=1)")]
 [numthreads(kzstdgpu_TgSizeX_FinaliseSequenceOffsets, 1, 1)]
@@ -41,11 +37,9 @@ void main(uint2 groupId : SV_GroupId, uint i : SV_GroupThreadId)
 {
     zstdgpu_FinaliseSequenceOffsets_SRT srt;
 
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                      srt.in##name    = ZstdIn##name;
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                      srt.inout##name = ZstdInOut##name;
+    #include "../zstdgpu_srt_decl_copy.h"
     ZSTDGPU_FINALISE_SEQUENCE_OFFSETS_SRT()
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
+    #include "../zstdgpu_srt_decl_undef.h"
 
 #if defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
     i += groupId.x * kzstdgpu_TgSizeX_FinaliseSequenceOffsets;

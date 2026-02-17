@@ -27,13 +27,9 @@ struct Consts
 
 ConstantBuffer<Consts>                  Constants                           : register(b0);
 
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                   ZSTDGPU_RO_BUFFER(type)                     ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)  ZSTDGPU_RW_TYPED_BUFFER(hlsl_type, type)    ZstdInOut##name : register(u##index);
-
+#include "../zstdgpu_srt_decl_bind.h"
 ZSTDGPU_MEMSET_MEMCPY_SRT()
-
-#undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
+#include "../zstdgpu_srt_decl_undef.h"
 
 StructuredBuffer<uint32_t>              ZstdInBlockSizePrefixTyped          : register(t4);
 

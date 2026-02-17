@@ -26,13 +26,9 @@ struct Consts
 
 ConstantBuffer<Consts> Constants : register(b0);
 
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index) ZSTDGPU_RO_BUFFER(type) ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index) ZSTDGPU_RW_BUFFER(type) ZstdInOut##name : register(u##index);
-
+#include "../zstdgpu_srt_decl_bind.h"
 ZSTDGPU_PARSE_FRAMES_SRT()
-
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
+#include "../zstdgpu_srt_decl_undef.h"
 
 #ifdef __XBOX_SCARLETT
 #define __XBOX_ENABLE_WAVE32 1
@@ -44,11 +40,9 @@ void main(uint i : SV_DispatchThreadId)
 {
     zstdgpu_ParseFrames_SRT srt;
 
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                      srt.in##name    = ZstdIn##name;
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                      srt.inout##name = ZstdInOut##name;
+    #include "../zstdgpu_srt_decl_copy.h"
     ZSTDGPU_PARSE_FRAMES_SRT()
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
+    #include "../zstdgpu_srt_decl_undef.h"
 
     srt.frameCount                  = Constants.frameCount;
     srt.compressedBufferSizeInBytes = Constants.compressedBufferSizeInBytes;

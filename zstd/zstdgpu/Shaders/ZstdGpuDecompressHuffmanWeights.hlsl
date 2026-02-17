@@ -17,17 +17,9 @@
 
 #include "../zstdgpu_shaders.h"
 
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                  ZSTDGPU_RO_BUFFER(type)                    ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                  ZSTDGPU_RW_BUFFER(type)                    ZstdInOut##name : register(u##index);
-#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index) ZSTDGPU_RO_TYPED_BUFFER(hlsl_type, type)   ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index) ZSTDGPU_RW_TYPED_BUFFER(hlsl_type, type)   ZstdInOut##name : register(u##index);
-
+#include "../zstdgpu_srt_decl_bind.h"
 ZSTDGPU_DECOMPRESS_HUFFMAN_WEIGHTS_SRT()
-
-#undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RO_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
+#include "../zstdgpu_srt_decl_undef.h"
 
 #ifdef __XBOX_SCARLETT
 #define __XBOX_ENABLE_WAVE32 1
@@ -39,15 +31,9 @@ void main(uint i : SV_DispatchThreadId)
 {
     zstdgpu_DecompressHuffmanWeights_SRT srt;
 
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                      srt.in##name    = ZstdIn##name;
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                      srt.inout##name = ZstdInOut##name;
-#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     srt.in##name    = ZstdIn##name;
-#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     srt.inout##name = ZstdInOut##name;
+    #include "../zstdgpu_srt_decl_copy.h"
     ZSTDGPU_DECOMPRESS_HUFFMAN_WEIGHTS_SRT()
-#undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RO_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
+    #include "../zstdgpu_srt_decl_undef.h"
 
     zstdgpu_ShaderEntry_DecompressHuffmanWeights(srt, i);
 }

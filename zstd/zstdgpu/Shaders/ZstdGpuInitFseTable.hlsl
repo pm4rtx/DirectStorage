@@ -49,17 +49,9 @@ struct Consts
 
 ConstantBuffer<Consts> Constants : register(b0);
 
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                  ZSTDGPU_RO_BUFFER(type)                    ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                  ZSTDGPU_RW_BUFFER(type)                    ZstdInOut##name : register(u##index);
-#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index) ZSTDGPU_RO_TYPED_BUFFER(hlsl_type, type)   ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index) ZSTDGPU_RW_TYPED_BUFFER(hlsl_type, type)   ZstdInOut##name : register(u##index);
-
+#include "../zstdgpu_srt_decl_bind.h"
 ZSTDGPU_INIT_FSE_TABLE_SRT()
-
-#undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RO_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
+#include "../zstdgpu_srt_decl_undef.h"
 
 groupshared uint32_t Lds[
     0 +
@@ -85,15 +77,9 @@ void main(uint32_t groupId : SV_GroupId, uint32_t i : SV_GroupThreadId)
 {
     zstdgpu_InitFseTable_SRT srt;
 
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                      srt.in##name    = ZstdIn##name;
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                      srt.inout##name = ZstdInOut##name;
-#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     srt.in##name    = ZstdIn##name;
-#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     srt.inout##name = ZstdInOut##name;
+    #include "../zstdgpu_srt_decl_copy.h"
     ZSTDGPU_INIT_FSE_TABLE_SRT()
-#undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RO_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
+    #include "../zstdgpu_srt_decl_undef.h"
     srt.tableStartIndex = Constants.tableStartIndex;
     zstdgpu_ShaderEntry_InitFseTable(srt, groupId, i);
 }

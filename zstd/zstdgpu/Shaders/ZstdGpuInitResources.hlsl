@@ -32,15 +32,9 @@ struct Consts
 
 ConstantBuffer<Consts> Constants : register(b0);
 
-#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index) ZSTDGPU_RO_TYPED_BUFFER(hlsl_type, type)   ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index) ZSTDGPU_RW_TYPED_BUFFER(hlsl_type, type)   ZstdInOut##name : register(u##index);
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                  ZSTDGPU_RW_BUFFER(type)                    ZstdInOut##name : register(u##index);
-
+#include "../zstdgpu_srt_decl_bind.h"
 ZSTDGPU_INIT_RESOURCES_SRT()
-
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RO_TYPED_BUFFER_DECL
+#include "../zstdgpu_srt_decl_undef.h"
 
 [RootSignature("DescriptorTable(SRV(t0, numDescriptors=1), UAV(u0, numDescriptors=19)), RootConstants(b0, num32BitConstants=4)")]
 [numthreads(kzstdgpu_TgSizeX_InitCounters, 1, 1)]
@@ -48,13 +42,9 @@ void main(uint i : SV_DispatchThreadId)
 {
     zstdgpu_InitResources_SRT srt;
 
-#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     srt.in##name    = ZstdIn##name;
-#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     srt.inout##name = ZstdInOut##name;
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                      srt.inout##name = ZstdInOut##name;
+    #include "../zstdgpu_srt_decl_copy.h"
     ZSTDGPU_INIT_RESOURCES_SRT()
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RO_TYPED_BUFFER_DECL
+    #include "../zstdgpu_srt_decl_undef.h"
 
     srt.allBlockCount           = Constants.allBlockCount;
     srt.cmpBlockCount           = Constants.cmpBlockCount;
