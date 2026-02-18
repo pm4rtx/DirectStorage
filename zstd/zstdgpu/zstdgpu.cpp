@@ -40,6 +40,9 @@
 #include "ZstdGpuDecompressHuffmanWeights.h"
 #include "ZstdGpuDecompressLiterals.h"
 #include "ZstdGpuDecompressSequences.h"
+#include "ZstdGpuDecompressSequences_LdsFseCache128.h"
+#include "ZstdGpuDecompressSequences_LdsFseCache64.h"
+#include "ZstdGpuDecompressSequences_LdsFseCache32.h"
 #include "ZstdGpuExecuteSequences128.h"
 #include "ZstdGpuExecuteSequences64.h"
 #include "ZstdGpuExecuteSequences32.h"
@@ -306,6 +309,9 @@ static void zstdgpu_ReCreate_SRTs(zstdgpu_SRTs & srts, ID3D12Device *device, con
     ZSTDGPU_KERNEL(DecompressHuffmanWeights                 , L"Decompress FSE-compressed Huffman Weights")                         \
     ZSTDGPU_KERNEL(DecompressLiterals                       , L"Decompress Literals")                                               \
     ZSTDGPU_KERNEL(DecompressSequences                      , L"Decompress Sequences")                                              \
+    ZSTDGPU_KERNEL(DecompressSequences_LdsFseCache128      , L"Decompress Sequences (LDS FSE Cache 128)")                           \
+    ZSTDGPU_KERNEL(DecompressSequences_LdsFseCache64       , L"Decompress Sequences (LDS FSE Cache 64)")                            \
+    ZSTDGPU_KERNEL(DecompressSequences_LdsFseCache32       , L"Decompress Sequences (LDS FSE Cache 32)")                            \
     ZSTDGPU_KERNEL(ExecuteSequences128                      , L"Execute Sequences 128")                                             \
     ZSTDGPU_KERNEL(ExecuteSequences64                       , L"Execute Sequences 64")                                              \
     ZSTDGPU_KERNEL(ExecuteSequences32                       , L"Execute Sequences 32")                                              \
@@ -391,6 +397,7 @@ struct zstdgpu_PerRequestContextImpl
         ZSTDGPU_KERNEL_LIST()
     #undef ZSTDGPU_KERNEL
     d3d12aid_ComputeRsPs    ExecuteSequences;
+    d3d12aid_ComputeRsPs    DecompressSequences_LdsFseCache;
 
     zstdgpu_SRTs            srts;
     zstdgpu_ResourceDataGpu resData;
@@ -551,22 +558,29 @@ zstdgpu_Status zstdgpu_CreatePerRequestContext(zstdgpu_PerRequestContext *outPer
         #undef ZSTDGPU_KERNEL
 #ifdef _GAMING_XBOX_SCARLETT
         context->ExecuteSequences = context->ExecuteSequences64;
+        context->DecompressSequences_LdsFseCache = context->DecompressSequences_LdsFseCache32;
 #else
         if (persistentContext->maxLaneCount == 128)
         {
             context->ExecuteSequences = context->ExecuteSequences128;
+            context->DecompressSequences_LdsFseCache = context->DecompressSequences_LdsFseCache128;
         }
         else if (persistentContext->maxLaneCount == 64)
         {
             context->ExecuteSequences = context->ExecuteSequences64;
+            context->DecompressSequences_LdsFseCache = context->DecompressSequences_LdsFseCache64;
         }
         else
         {
             context->ExecuteSequences = context->ExecuteSequences32;
+            context->DecompressSequences_LdsFseCache = context->DecompressSequences_LdsFseCache32;
         }
 #endif
         context->ExecuteSequences.rs->AddRef();
         context->ExecuteSequences.ps->AddRef();
+
+        context->DecompressSequences_LdsFseCache.rs->AddRef();
+        context->DecompressSequences_LdsFseCache.ps->AddRef();
 
         context->srts.heap = NULL;
         context->srts.heapOffset = 0;
@@ -631,6 +645,7 @@ zstdgpu_Status zstdgpu_DestroyPerRequestContext(void **outMemoryBlock, uint32_t 
         D3D12AID_SAFE_RELEASE(inPerRequestContext->srts.heap);
 
         d3d12aid_ComputeRsPs_Release(&inPerRequestContext->ExecuteSequences);
+        d3d12aid_ComputeRsPs_Release(&inPerRequestContext->DecompressSequences_LdsFseCache);
         #define ZSTDGPU_KERNEL(name, desc) d3d12aid_ComputeRsPs_Release(&inPerRequestContext->name);
             ZSTDGPU_KERNEL_LIST()
         #undef ZSTDGPU_KERNEL
@@ -1692,11 +1707,13 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     if (req->zstdCmpBlockCount > 0)
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Decompress Sequences]");
-        BIND_RS_PS_SRT(DecompressSequences);
+        d3d12aid_ComputeRsPs_Set(&req->DecompressSequences_LdsFseCache, cmdList);
+        cmdList->SetDescriptorHeaps(1, &req->srts.heap);
+        cmdList->SetComputeRootDescriptorTable(0, req->srts.DecompressSequencesGpuHandle);
 
-        ID3D12Resource* argBuf = req->resData.gpuOnly.Counters;
+        const uint32_t tgCount = ZSTDGPU_TG_COUNT(req->zstdSeqStreamCount, 1); /** 1 - because we choose _LdsFseCache shader that process 1 stream per threadgroup */
         ZSTDGPU_KERNEL_SCOPE(DecompressSequences, cmdList,
-            cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_DecompressSequencesGroups * sizeof(uint32_t), NULL, 0);
+            zstdgpu_Dispatch32Bit(cmdList, tgCount, 1, 0);
         );
         PIXEndEvent(cmdList);
     }

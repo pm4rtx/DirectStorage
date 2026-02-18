@@ -3573,6 +3573,17 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_IN
     ZSTDGPU_PRELOAD_FSE_INTO_LDS(Offs)
     ZSTDGPU_PRELOAD_FSE_INTO_LDS(MLen)
 
+    #if !defined(__XBOX_SCARLETT)
+    if (tgSize > WaveGetLaneCount())
+    {
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (threadId >= WaveGetLaneCount())
+    {
+        return;
+    }
+    #endif
+
     #define ZSTDGPU_INIT_FSE_STATE(name)                                                                    \
         uint32_t state##name = 0;                                                                           \
         if (seqRef.fse##name < kzstdgpu_FseProbTableIndex_MinRLE)                                           \
