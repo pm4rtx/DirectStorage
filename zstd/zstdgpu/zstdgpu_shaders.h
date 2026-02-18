@@ -2943,7 +2943,7 @@ static void zstdgpu_ShaderEntry_DecompressLiterals(ZSTDGPU_PARAM_INOUT(zstdgpu_D
     ZSTDGPU_LDS_REGION(CodeAndSymbol   , kzstdgpu_MaxCount_HuffmanWeights)          \
     ZSTDGPU_LDS_REGION(PreInit         , kzstdgpu_PreInitHuffmanTable_LdsSize)      \
     ZSTDGPU_LDS_REGION(RankIndex       , kzstdgpu_MaxCount_HuffmanWeightRanks)      \
-    ZSTDGPU_LDS_REGION(HuffmanTable    , 1u << kzstdgpu_MaxCount_HuffmanWeightBits)
+    ZSTDGPU_LDS_REGION(HuffmanTable    , 1u << (kzstdgpu_MaxCount_HuffmanWeightBits - 1u))
 
 #include "zstdgpu_lds_decl_size.h"
 ZSTDGPU_INIT_HUFFMAN_TABLE_AND_DECOMPRESS_LITERALS_LDS(0, InitHuffmanTableAndDecompressLiterals);
@@ -2999,16 +2999,30 @@ static void zstdgpu_ShaderEntry_InitHuffmanTable_And_DecompressLiterals(ZSTDGPU_
     GroupMemoryBarrierWithGroupSync();
 
     const uint32_t stateCnt = zstdgpu_LdsLoadU32(GS_RankIndex + bitsMax);
+    const uint32_t statePairCnt = stateCnt >> 1u;
 
     // Expand Huffman Table
-    ZSTDGPU_FOR_WORK_ITEMS(stateId, stateCnt, threadId, kzstdgpu_TgSizeX_DecompressLiterals)
+    ZSTDGPU_FOR_WORK_ITEMS(statePairId, statePairCnt, threadId, kzstdgpu_TgSizeX_DecompressLiterals)
     {
-        const uint32_t symbolIndex = zstdgpu_BinarySearchLds(GS_CodeAndSymbol, 0, codeTableSize, stateId, 0x00ffffffu);
-        const uint32_t bitcntIndex = zstdgpu_BinarySearchLds(GS_RankIndex, 0, bitsMax + 1, stateId, 0xffffffffu);
-        const uint32_t symbol = zstdgpu_LdsLoadU32(GS_CodeAndSymbol + symbolIndex) >> 24;
-        const uint32_t bitcnt = bitsMax - bitcntIndex;
+        const uint32_t stateId0 = statePairId << 1u;
+        const uint32_t stateId1 = stateId0 + 1u;
 
-        zstdgpu_LdsStoreU32(GS_HuffmanTable + stateId, (symbol << 16) | bitcnt);
+        const uint32_t symbolIndex0 = zstdgpu_BinarySearchLds(GS_CodeAndSymbol, 0, codeTableSize, stateId0, 0x00ffffffu);
+        const uint32_t symbolIndex1 = zstdgpu_BinarySearchLds(GS_CodeAndSymbol, 0, codeTableSize, stateId1, 0x00ffffffu);
+
+        const uint32_t bitcntIndex0 = zstdgpu_BinarySearchLds(GS_RankIndex, 0, bitsMax + 1, stateId0, 0xffffffffu);
+        const uint32_t bitcntIndex1 = zstdgpu_BinarySearchLds(GS_RankIndex, 0, bitsMax + 1, stateId1, 0xffffffffu);
+
+        const uint32_t symbol0 = zstdgpu_LdsLoadU32(GS_CodeAndSymbol + symbolIndex0) >> 24;
+        const uint32_t symbol1 = zstdgpu_LdsLoadU32(GS_CodeAndSymbol + symbolIndex1) >> 24;
+
+        const uint32_t bitcnt0 = bitsMax - bitcntIndex0;
+        const uint32_t bitcnt1 = bitsMax - bitcntIndex1;
+
+        const uint32_t symbolAndBitcnt0 = (symbol0 << 8) | bitcnt0;
+        const uint32_t symbolAndBitcnt1 = (symbol1 << 8) | bitcnt1;
+
+        zstdgpu_LdsStoreU32(GS_HuffmanTable + statePairId, (symbolAndBitcnt1 << 16) | symbolAndBitcnt0);
     }
     GroupMemoryBarrierWithGroupSync();
 
