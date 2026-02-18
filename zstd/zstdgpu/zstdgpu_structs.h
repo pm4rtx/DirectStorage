@@ -111,20 +111,23 @@
 #   endif
 #endif
 
+// Opaque LDS address types: offset on HLSL, pointer on C++.
+// Using these instead of raw uint32_t / uint32_t* prevents accidental type
+// mismatches when storing intermediate LDS addresses in local variables.
+#ifdef __hlsl_dx_compiler
+    typedef uint32_t        zstdgpu_lds_uintptr_t;
+    typedef uint32_t        zstdgpu_lds_const_uintptr_t;
+#else
+    typedef uint32_t *      zstdgpu_lds_uintptr_t;
+    typedef const uint32_t* zstdgpu_lds_const_uintptr_t;
+#endif
+
 #ifndef ZSTDGPU_PARAM_LDS_IN
-#   ifdef __hlsl_dx_compiler
-#       define ZSTDGPU_PARAM_LDS_IN(type) type
-#   else
-#       define ZSTDGPU_PARAM_LDS_IN(type) const type *
-#   endif
+#   define ZSTDGPU_PARAM_LDS_IN(type) zstdgpu_lds_const_uintptr_t
 #endif
 
 #ifndef ZSTDGPU_PARAM_LDS_INOUT
-#   ifdef __hlsl_dx_compiler
-#       define ZSTDGPU_PARAM_LDS_INOUT(type) type
-#   else
-#       define ZSTDGPU_PARAM_LDS_INOUT(type) type *
-#   endif
+#   define ZSTDGPU_PARAM_LDS_INOUT(type) zstdgpu_lds_uintptr_t
 #endif
 
 #ifndef ZSTDGPU_BRANCH

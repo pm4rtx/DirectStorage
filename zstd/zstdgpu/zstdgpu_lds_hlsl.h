@@ -38,37 +38,37 @@
 #   error ZSTDGPU_LDS must be defined as `#define ZSTDGPU_LDS YourLdsRegion`
 #endif
 
-static uint32_t zstdgpu_LdsLoadU32(uint32_t offsetInUInt32)
+static uint32_t zstdgpu_LdsLoadU32(zstdgpu_lds_const_uintptr_t offsetInUInt32)
 {
     return ZSTDGPU_LDS[offsetInUInt32];
 }
 
-static void zstdgpu_LdsStoreU32(uint32_t offsetInUInt32, uint32_t x)
+static void zstdgpu_LdsStoreU32(zstdgpu_lds_uintptr_t offsetInUInt32, uint32_t x)
 {
     ZSTDGPU_LDS[offsetInUInt32] = x;
 }
 
-static void zstdgpu_LdsAtomicAddU32(uint32_t offsetInUInt32, uint32_t x)
+static void zstdgpu_LdsAtomicAddU32(zstdgpu_lds_uintptr_t offsetInUInt32, uint32_t x)
 {
     InterlockedAdd(ZSTDGPU_LDS[offsetInUInt32], x);
 }
 
-static void zstdgpu_LdsAtomicMaxU32(uint32_t offsetInUInt32, uint32_t x)
+static void zstdgpu_LdsAtomicMaxU32(zstdgpu_lds_uintptr_t offsetInUInt32, uint32_t x)
 {
     InterlockedMax(ZSTDGPU_LDS[offsetInUInt32], x);
 }
 
-static void zstdgpu_LdsAtomicMinU32(uint32_t offsetInUInt32, uint32_t x)
+static void zstdgpu_LdsAtomicMinU32(zstdgpu_lds_uintptr_t offsetInUInt32, uint32_t x)
 {
     InterlockedMin(ZSTDGPU_LDS[offsetInUInt32], x);
 }
 
-static void zstdgpu_LdsAtomicAndU32(uint32_t offsetInUInt32, uint32_t x)
+static void zstdgpu_LdsAtomicAndU32(zstdgpu_lds_uintptr_t offsetInUInt32, uint32_t x)
 {
     InterlockedAnd(ZSTDGPU_LDS[offsetInUInt32], x);
 }
 
-static void zstdgpu_LdsAtomicOrU32(uint32_t offsetInUInt32, uint32_t x)
+static void zstdgpu_LdsAtomicOrU32(zstdgpu_lds_uintptr_t offsetInUInt32, uint32_t x)
 {
     InterlockedOr(ZSTDGPU_LDS[offsetInUInt32], x);
 }

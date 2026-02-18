@@ -1592,13 +1592,52 @@ static void zstdgpu_ShaderEntry_ParseCompressedBlocks(ZSTDGPU_PARAM_INOUT(zstdgp
     srt.inoutCompressedBlocks[threadId] = outBlockData;
 }
 
-static void zstdgpu_ShaderEntry_InitFseTable(ZSTDGPU_PARAM_INOUT(zstdgpu_InitFseTable_SRT) srt, uint32_t groupId, uint32_t i)
-{
+// LDS partitioning macro list for FSE Table Initialisation (default shader)
+#define ZSTDGPU_INIT_FSE_TABLE_LDS_DEFAULT(base, size)                                                      \
+    ZSTDGPU_LDS_SIZE(size)                                                                                  \
+    ZSTDGPU_LDS_BASE(base)                                                                                  \
+    ZSTDGPU_LDS_REGION(CompactedPositiveFrqPrefixSumAndSymbols  , kzstdgpu_MaxCount_FseProbs)               \
+    ZSTDGPU_LDS_REGION(SymbolBitMasks                           , kzstdgpu_MaxCount_FseElemsAllDigitBits)
+
+// LDS partitioning macro list for FSE Table Initialisation (experimental shader)
+#define ZSTDGPU_INIT_FSE_TABLE_LDS_EXPERIMENTAL(base, size)                                                 \
+    ZSTDGPU_LDS_SIZE(size)                                                                                  \
+    ZSTDGPU_LDS_BASE(base)                                                                                  \
+    ZSTDGPU_LDS_REGION(CompactedPositiveFrqPrefixSumAndSymbols  , kzstdgpu_MaxCount_FseElems)               \
+    ZSTDGPU_LDS_REGION(SymbolShuffleScratch                     , kzstdgpu_MaxCount_FseElems)               \
+    ZSTDGPU_LDS_REGION(SymbolBitMasks                           , kzstdgpu_MaxCount_FseElemsOneDigitBits * 2)
+
+// LDS partitioning macro list tail for FSE Table Initialisation (when threadgroup contains multiple waves)
+#define ZSTDGPU_INIT_FSE_TABLE_LDS_MULTI_WAVE()                                                             \
+    ZSTDGPU_LDS_REGION(PerWaveDword0                            , kzstdgpu_WaveCountMax_InitFseTable)       \
+    ZSTDGPU_LDS_REGION(PerWaveDword1                            , kzstdgpu_WaveCountMax_InitFseTable)       \
+    ZSTDGPU_LDS_REGION(PerWaveDword2                            , kzstdgpu_WaveCountMax_InitFseTable)       \
+    ZSTDGPU_LDS_REGION(PerGroupDword0                           , 1)                                        \
+    ZSTDGPU_LDS_REGION(PerGroupDword1                           , 1)                                        \
+    ZSTDGPU_LDS_REGION(PerGroupDword2                           , 1)
 
 #ifndef IS_MULTI_WAVE
 #define IS_MULTI_WAVE 0
 #define IS_MULTI_WAVE_UNDEF 1
 #endif
+
+#include "zstdgpu_lds_decl_size.h"
+ZSTDGPU_INIT_FSE_TABLE_LDS_DEFAULT(0, InitFseTable_Default)
+#if IS_MULTI_WAVE
+ZSTDGPU_INIT_FSE_TABLE_LDS_MULTI_WAVE()
+#endif
+;
+
+ZSTDGPU_INIT_FSE_TABLE_LDS_EXPERIMENTAL(0, InitFseTable_Experimental)
+#if IS_MULTI_WAVE
+ZSTDGPU_INIT_FSE_TABLE_LDS_MULTI_WAVE()
+#endif
+;
+
+#include "zstdgpu_lds_decl_undef.h"
+
+static void zstdgpu_ShaderEntry_InitFseTable(ZSTDGPU_PARAM_INOUT(zstdgpu_InitFseTable_SRT) srt, uint32_t groupId, uint32_t i)
+{
 
 #ifndef ZSTD_BITCNT_NSTATE_METHOD_REFERENCE
 #define ZSTD_BITCNT_NSTATE_METHOD_REFERENCE 0
@@ -1633,24 +1672,16 @@ static void zstdgpu_ShaderEntry_InitFseTable(ZSTDGPU_PARAM_INOUT(zstdgpu_InitFse
     const uint32_t waveIdx = WaveReadLaneFirst(i / laneCnt);
     //const uint32_t laneIdx = i % laneCnt;
 
-    ZSTDGPU_START_GROUPSHARED()
-
-#if (ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_DEFAULT) || (ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_REFERENCE)
-    ZSTDGPU_DECLARE_GROUPSHARED(CompactedPositiveFrqPrefixSumAndSymbols  , kzstdgpu_MaxCount_FseProbs); //< WARN(pamartis): Wasteful, need only uint8_t but HLSL doesn't support it
-    ZSTDGPU_DECLARE_GROUPSHARED(SymbolBitMasks                           , kzstdgpu_MaxCount_FseElemsAllDigitBits);
-#elif ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_EXPERIMENTAL
-    ZSTDGPU_DECLARE_GROUPSHARED(CompactedPositiveFrqPrefixSumAndSymbols  , kzstdgpu_MaxCount_FseElems);
-    ZSTDGPU_DECLARE_GROUPSHARED(SymbolShuffleScratch                     , kzstdgpu_MaxCount_FseElems);
-    ZSTDGPU_DECLARE_GROUPSHARED(SymbolBitMasks                           , kzstdgpu_MaxCount_FseElemsOneDigitBits * 2);
-#endif
-#if IS_MULTI_WAVE
-    ZSTDGPU_DECLARE_GROUPSHARED(PerWaveDword0                            , kzstdgpu_WaveCountMax_InitFseTable);
-    ZSTDGPU_DECLARE_GROUPSHARED(PerWaveDword1                            , kzstdgpu_WaveCountMax_InitFseTable);
-    ZSTDGPU_DECLARE_GROUPSHARED(PerWaveDword2                            , kzstdgpu_WaveCountMax_InitFseTable);
-    ZSTDGPU_DECLARE_GROUPSHARED(PerGroupDword0                           , 1);
-    ZSTDGPU_DECLARE_GROUPSHARED(PerGroupDword1                           , 1);
-    ZSTDGPU_DECLARE_GROUPSHARED(PerGroupDword2                           , 1);
-#endif
+    #include "zstdgpu_lds_decl_base.h"
+    #if (ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_DEFAULT) || (ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_REFERENCE)
+        ZSTDGPU_INIT_FSE_TABLE_LDS_DEFAULT(0, InitFseTable_Default)
+    #elif ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_EXPERIMENTAL
+        ZSTDGPU_INIT_FSE_TABLE_LDS_EXPERIMENTAL(0, InitFseTable_Experimental)
+    #endif
+    #if IS_MULTI_WAVE
+        ZSTDGPU_INIT_FSE_TABLE_LDS_MULTI_WAVE()
+    #endif
+    #include "zstdgpu_lds_decl_undef.h"
 
     const uint32_t tableStartIndex = srt.tableStartIndex + groupId;
     const uint32_t frqDataOffset = tableStartIndex * kzstdgpu_MaxCount_FseProbs;
@@ -2450,6 +2481,22 @@ static void zstdgpu_ShaderEntry_DecodeHuffmanWeights(ZSTDGPU_PARAM_INOUT(zstdgpu
     }
 }
 
+// LDS partitioning macro lists for Huffman Table pre-initialisation (sub-regions within PreInit).
+#define ZSTDGPU_PRE_INIT_HUFFMAN_TABLE_LDS(base, size)                                  \
+    ZSTDGPU_LDS_SIZE(size)                                                              \
+    ZSTDGPU_LDS_BASE(base)                                                              \
+    ZSTDGPU_LDS_REGION(Bits            , kzstdgpu_MaxCount_HuffmanWeights)              \
+    ZSTDGPU_LDS_REGION(BitsMask        , kzstdgpu_MaxCount_HuffmanWeightsAllDigitBits)  \
+    ZSTDGPU_LDS_REGION(RankCount       , kzstdgpu_MaxCount_HuffmanWeightRanks)          \
+    ZSTDGPU_LDS_REGION(RankCountPrefix , kzstdgpu_MaxCount_HuffmanWeightRanks)          \
+    ZSTDGPU_LDS_REGION(WeightSum       , 1)                                             \
+    ZSTDGPU_LDS_REGION(BitsMax         , 1)
+
+
+#include "zstdgpu_lds_decl_size.h"
+ZSTDGPU_PRE_INIT_HUFFMAN_TABLE_LDS(0, PreInitHuffmanTable);
+#include "zstdgpu_lds_decl_undef.h"
+
 static void zstdgpu_PreInitHuffmanTableToLds(ZSTDGPU_RO_TYPED_BUFFER(uint32_t, uint8_t) HuffmanWeights,
                                              ZSTDGPU_RO_TYPED_BUFFER(uint32_t, uint8_t) HuffmanWeightCount,
                                              uint32_t tableId,
@@ -2480,12 +2527,9 @@ static void zstdgpu_PreInitHuffmanTableToLds(ZSTDGPU_RO_TYPED_BUFFER(uint32_t, u
 {
     const uint32_t weightCntMinusOne = HuffmanWeightCount[tableId];
 
-    ZSTDGPU_DECLARE_GROUPSHARED(Bits            , kzstdgpu_MaxCount_HuffmanWeights); //< WARN(pamartis): Wasteful, need only uint8_t but HLSL doesn't support it
-    ZSTDGPU_DECLARE_GROUPSHARED(BitsMask        , kzstdgpu_MaxCount_HuffmanWeightsAllDigitBits);
-    ZSTDGPU_DECLARE_GROUPSHARED(RankCount       , kzstdgpu_MaxCount_HuffmanWeightRanks);
-    ZSTDGPU_DECLARE_GROUPSHARED(RankCountPrefix , kzstdgpu_MaxCount_HuffmanWeightRanks);
-    ZSTDGPU_DECLARE_GROUPSHARED(WeightSum       , 1);
-    ZSTDGPU_DECLARE_GROUPSHARED(BitsMax         , 1);
+    #include "zstdgpu_lds_decl_base.h"
+    ZSTDGPU_PRE_INIT_HUFFMAN_TABLE_LDS(GS_Region, PreInitHuffmanTable)
+    #include "zstdgpu_lds_decl_undef.h"
 
     ZSTDGPU_FOR_WORK_ITEMS(i, 1, threadId, threadCnt)
     {
@@ -2684,17 +2728,23 @@ static void zstdgpu_PreInitHuffmanTableToLds(ZSTDGPU_RO_TYPED_BUFFER(uint32_t, u
     outCodeTableSize = zstdgpu_LdsLoadU32(GS_RankCountPrefix + outBitsMax);
 }
 
+// LDS partitioning macro lists for Huffman Table Initialisation (standalone shader)
+#define ZSTDGPU_INIT_HUFFMAN_TABLE_LDS(base, size)                              \
+    ZSTDGPU_LDS_SIZE(size)                                                      \
+    ZSTDGPU_LDS_BASE(base)                                                      \
+    ZSTDGPU_LDS_REGION(PreInit         , kzstdgpu_PreInitHuffmanTable_LdsSize)   \
+    ZSTDGPU_LDS_REGION(RankIndex       , kzstdgpu_MaxCount_HuffmanWeightRanks)  \
+    ZSTDGPU_LDS_REGION(CodeAndSymbol   , 1)
+
+#include "zstdgpu_lds_decl_size.h"
+ZSTDGPU_INIT_HUFFMAN_TABLE_LDS(0, InitHuffmanTable);
+#include "zstdgpu_lds_decl_undef.h"
+
 static void zstdgpu_ShaderEntry_InitHuffmanTable(ZSTDGPU_PARAM_INOUT(zstdgpu_InitHuffmanTable_SRT) srt, uint32_t groupId, uint32_t threadId, uint32_t tgSize)
 {
-    ZSTDGPU_START_GROUPSHARED()
-    ZSTDGPU_DECLARE_GROUPSHARED(PreInit         , kzstdgpu_MaxCount_HuffmanWeights
-                                                + kzstdgpu_MaxCount_HuffmanWeightsAllDigitBits
-                                                + kzstdgpu_MaxCount_HuffmanWeightRanks
-                                                + kzstdgpu_MaxCount_HuffmanWeightRanks
-                                                + 2);
-
-    ZSTDGPU_DECLARE_GROUPSHARED(RankIndex       , kzstdgpu_MaxCount_HuffmanWeightRanks);
-    ZSTDGPU_DECLARE_GROUPSHARED(CodeAndSymbol   , 1);
+    #include "zstdgpu_lds_decl_base.h"
+    ZSTDGPU_INIT_HUFFMAN_TABLE_LDS(0, InitHuffmanTable);
+    #include "zstdgpu_lds_decl_undef.h"
 
     uint32_t bitsMax = 0;
     uint32_t codeTableSize = 0;
@@ -2785,6 +2835,16 @@ static void zstdgpu_ConvertThreadgroupIdToDecompressLiteralsInputs(ZSTDGPU_RO_BU
     }
 }
 
+// LDS partitioning macro lists for Huffman Table Initialisation (standalone shader)
+#define ZSTDGPU_DECOMPRESS_LITERALS_LDS(base, size) \
+    ZSTDGPU_LDS_SIZE(size)                          \
+    ZSTDGPU_LDS_BASE(base)                          \
+    ZSTDGPU_LDS_REGION(HuffmanTable, kzstdgpu_MaxCount_HuffmanTableExpandedUInts)
+
+#include "zstdgpu_lds_decl_size.h"
+ZSTDGPU_DECOMPRESS_LITERALS_LDS(0, DecompressLiterals);
+#include "zstdgpu_lds_decl_undef.h"
+
 static void zstdgpu_ShaderEntry_DecompressLiterals(ZSTDGPU_PARAM_INOUT(zstdgpu_DecompressLiterals_SRT) srt, uint32_t groupId, uint32_t threadId, uint32_t tgSize)
 {
     uint32_t htIndex = 0;
@@ -2804,8 +2864,9 @@ static void zstdgpu_ShaderEntry_DecompressLiterals(ZSTDGPU_PARAM_INOUT(zstdgpu_D
     );
 
 
-    ZSTDGPU_START_GROUPSHARED()
-    ZSTDGPU_DECLARE_GROUPSHARED(HuffmanTable, kzstdgpu_MaxCount_HuffmanTableExpandedUInts);
+    #include "zstdgpu_lds_decl_base.h"
+    ZSTDGPU_DECOMPRESS_LITERALS_LDS(0, DecompressLiterals);
+    #include "zstdgpu_lds_decl_undef.h"
 
     const uint32_t htInfo = WaveReadLaneFirst(srt.inHuffmanTableInfo[htIndex]);
     const uint32_t bitsMax = htInfo >> 16;
@@ -2841,6 +2902,19 @@ static void zstdgpu_ShaderEntry_DecompressLiterals(ZSTDGPU_PARAM_INOUT(zstdgpu_D
     );
 }
 
+// LDS partitioning macro lists for combined Huffman Table Initialisation + Literal Decompression
+#define ZSTDGPU_INIT_HUFFMAN_TABLE_AND_DECOMPRESS_LITERALS_LDS(base, size)          \
+    ZSTDGPU_LDS_SIZE(size)                                                          \
+    ZSTDGPU_LDS_BASE(base)                                                          \
+    ZSTDGPU_LDS_REGION(CodeAndSymbol   , kzstdgpu_MaxCount_HuffmanWeights)          \
+    ZSTDGPU_LDS_REGION(PreInit         , kzstdgpu_PreInitHuffmanTable_LdsSize)      \
+    ZSTDGPU_LDS_REGION(RankIndex       , kzstdgpu_MaxCount_HuffmanWeightRanks)      \
+    ZSTDGPU_LDS_REGION(HuffmanTable    , kzstdgpu_MaxCount_HuffmanTableExpandedUInts)
+
+#include "zstdgpu_lds_decl_size.h"
+ZSTDGPU_INIT_HUFFMAN_TABLE_AND_DECOMPRESS_LITERALS_LDS(0, InitHuffmanTableAndDecompressLiterals);
+#include "zstdgpu_lds_decl_undef.h"
+
 static void zstdgpu_ShaderEntry_InitHuffmanTable_And_DecompressLiterals(ZSTDGPU_PARAM_INOUT(zstdgpu_InitHuffmanTable_And_DecompressLiterals_SRT) srt, uint32_t groupId, uint32_t threadId)
 {
     uint32_t htIndex = 0;
@@ -2862,16 +2936,9 @@ static void zstdgpu_ShaderEntry_InitHuffmanTable_And_DecompressLiterals(ZSTDGPU_
     //
     // The start of the Huffman Table initialisation
     //
-    ZSTDGPU_START_GROUPSHARED()
-    ZSTDGPU_DECLARE_GROUPSHARED(CodeAndSymbol   , kzstdgpu_MaxCount_HuffmanWeights);
-    ZSTDGPU_DECLARE_GROUPSHARED(PreInit         , kzstdgpu_MaxCount_HuffmanWeights
-                                                + kzstdgpu_MaxCount_HuffmanWeightsAllDigitBits
-                                                + kzstdgpu_MaxCount_HuffmanWeightRanks
-                                                + kzstdgpu_MaxCount_HuffmanWeightRanks
-                                                + 2);
-
-    ZSTDGPU_DECLARE_GROUPSHARED(RankIndex       , kzstdgpu_MaxCount_HuffmanWeightRanks);
-    ZSTDGPU_DECLARE_GROUPSHARED(HuffmanTable    , kzstdgpu_MaxCount_HuffmanTableExpandedUInts);
+    #include "zstdgpu_lds_decl_base.h"
+    ZSTDGPU_INIT_HUFFMAN_TABLE_AND_DECOMPRESS_LITERALS_LDS(0, InitHuffmanTableAndDecompressLiterals);
+    #include "zstdgpu_lds_decl_undef.h"
 
     ZSTDGPU_RW_BUFFER(uint32_t) dummyBuffer;
     #ifndef __hlsl_dx_compiler
@@ -3407,6 +3474,18 @@ static void zstdgpu_ShaderEntry_DecompressSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_
     //ZSTDGPU_ASSERT(bitBuffer.hadlastrefill && bitBuffer.bitcnt == 0);
 }
 
+// LDS partitioning macro lists for sequence decompression with in-LDS caching
+#define ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_FSE_CACHE_LDS(base, size)      \
+    ZSTDGPU_LDS_SIZE(size)                                              \
+    ZSTDGPU_LDS_BASE(base)                                              \
+    ZSTDGPU_LDS_REGION(FsePackedLLen   , kzstdgpu_FseElemMaxCount_LLen) \
+    ZSTDGPU_LDS_REGION(FsePackedMLen   , kzstdgpu_FseElemMaxCount_MLen) \
+    ZSTDGPU_LDS_REGION(FsePackedOffs   , kzstdgpu_FseElemMaxCount_Offs)
+
+#include "zstdgpu_lds_decl_size.h"
+ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_FSE_CACHE_LDS(0, DecompressSequences_LdsFseCache);
+#include "zstdgpu_lds_decl_undef.h"
+
 static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_INOUT(zstdgpu_DecompressSequences_SRT) srt, uint32_t groupId, uint32_t threadId, uint32_t tgSize)
 {
     ZSTDGPU_UNUSED(threadId);
@@ -3466,10 +3545,9 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_IN
     const uint32_t outputStart = dst.offs;
     const uint32_t outputEnd = outputStart + dst.size;
 
-    ZSTDGPU_START_GROUPSHARED()
-    ZSTDGPU_DECLARE_GROUPSHARED(FsePackedLLen, kzstdgpu_FseElemMaxCount_LLen);
-    ZSTDGPU_DECLARE_GROUPSHARED(FsePackedMLen, kzstdgpu_FseElemMaxCount_MLen);
-    ZSTDGPU_DECLARE_GROUPSHARED(FsePackedOffs, kzstdgpu_FseElemMaxCount_Offs);
+    #include "zstdgpu_lds_decl_base.h"
+    ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_FSE_CACHE_LDS(0, DecompressSequences_LdsFseCache);
+    #include "zstdgpu_lds_decl_undef.h"
 
     #define ZSTDGPU_PRELOAD_FSE_INTO_LDS(name)                                                                  \
         if (seqRef.fse##name < kzstdgpu_FseProbTableIndex_MinRLE)                                               \
@@ -3595,6 +3673,21 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_IN
     ZSTDGPU_ASSERT(bitBuffer.hadlastrefill && bitBuffer.bitcnt == 0);
 }
 
+// LDS partitioning macro lists for sequence decompression with in-LDS caching
+#define ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_OUT_CACHE_LDS(base, size)      \
+    ZSTDGPU_LDS_SIZE(size)                                              \
+    ZSTDGPU_LDS_BASE(base)                                              \
+    ZSTDGPU_LDS_REGION(OutputCache,     kzstdgpu_TgSizeX_DecompressSequences * (SEQ_CACHE_LEN + 1) * 3)
+
+#ifndef SEQ_CACHE_LEN
+#define SEQ_CACHE_LEN 128
+#define SEQ_CACHE_LEN_UNDEF 1
+#endif
+
+#include "zstdgpu_lds_decl_size.h"
+ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_OUT_CACHE_LDS(0, DecompressSequences_LdsOutCache);
+#include "zstdgpu_lds_decl_undef.h"
+
 static void zstdgpu_ShaderEntry_DecompressSequences_LdsOutCache(ZSTDGPU_PARAM_INOUT(zstdgpu_DecompressSequences_SRT) srt, uint32_t groupId, uint32_t threadId)
 {
     const uint32_t globalSeqBase = groupId * kzstdgpu_TgSizeX_DecompressSequences;
@@ -3624,12 +3717,11 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsOutCache(ZSTDGPU_PARAM_IN
 
     #ifndef SEQ_CACHE_LEN
     #define SEQ_CACHE_LEN 128
-    #else
-    #error `SEQ_CACHE_LEN` must not be defined.
     #endif
 
-    ZSTDGPU_START_GROUPSHARED()
-    ZSTDGPU_DECLARE_GROUPSHARED(OutputCache, kzstdgpu_TgSizeX_DecompressSequences * (SEQ_CACHE_LEN + 1) * 3);
+    #include "zstdgpu_lds_decl_base.h"
+    ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_OUT_CACHE_LDS(0, DecompressSequences_LdsOutCache);
+    #include "zstdgpu_lds_decl_undef.h"
 
     const uint32_t seqLdsLLenStart = 0;
     const uint32_t seqLdsMLenStart = kzstdgpu_TgSizeX_DecompressSequences * (SEQ_CACHE_LEN + 1);

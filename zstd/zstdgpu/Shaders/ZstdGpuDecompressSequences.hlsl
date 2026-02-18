@@ -15,12 +15,6 @@
  * Author(s):   Pavel Martishevsky (pamartis@microsoft.com)
  */
 
-#include "../zstdgpu_shaders.h"
-
-#include "../zstdgpu_srt_decl_bind.h"
-ZSTDGPU_DECOMPRESS_SEQUENCES_SRT()
-#include "../zstdgpu_srt_decl_undef.h"
-
 #ifdef __XBOX_SCARLETT
 #define __XBOX_ENABLE_WAVE32 1
 #endif
@@ -31,15 +25,24 @@ ZSTDGPU_DECOMPRESS_SEQUENCES_SRT()
 //#define USE_LDS_OUT_CACHE 1
 #endif
 
+#ifdef USE_LDS_OUT_CACHE
+#define SEQ_CACHE_LEN 128
+#endif
+
+#include "../zstdgpu_shaders.h"
+
+#include "../zstdgpu_srt_decl_bind.h"
+ZSTDGPU_DECOMPRESS_SEQUENCES_SRT()
+#include "../zstdgpu_srt_decl_undef.h"
+
 #ifdef USE_LDS_FSE_CACHE
-groupshared uint32_t Lds[kzstdgpu_FseElemMaxCount_LLen + kzstdgpu_FseElemMaxCount_MLen + kzstdgpu_FseElemMaxCount_Offs];
+groupshared uint32_t Lds[kzstdgpu_DecompressSequences_LdsFseCache_LdsSize];
 #define ZSTDGPU_LDS Lds
 #include "../zstdgpu_lds_hlsl.h"
 #endif
 
 #ifdef USE_LDS_OUT_CACHE
-#define SEQ_CACHE_LEN 128
-groupshared uint32_t Lds[kzstdgpu_TgSizeX_DecompressSequences * (SEQ_CACHE_LEN + 1) * 3];
+groupshared uint32_t Lds[kzstdgpu_DecompressSequences_LdsOutCache_LdsSize];
 #define ZSTDGPU_LDS Lds
 #include "../zstdgpu_lds_hlsl.h"
 #endif

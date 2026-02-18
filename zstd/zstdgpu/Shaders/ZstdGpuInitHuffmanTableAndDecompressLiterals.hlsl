@@ -33,7 +33,7 @@ ZSTDGPU_INIT_HUFFMAN_TABLE_AND_DECOMPRESS_LITERALS_SRT()
 #include "../zstdgpu_srt_decl_undef.h"
 
 // WARN(pamartis): Wasteful, need only uint8_t but HLSL doesn't support it
-groupshared uint32_t GS_Lds[kzstdgpu_MaxCount_HuffmanWeights * 2 + kzstdgpu_MaxCount_HuffmanWeightsAllDigitBits + kzstdgpu_MaxCount_HuffmanWeightRanks * 3 + 2 + kzstdgpu_MaxCount_HuffmanTableExpandedUInts];
+groupshared uint32_t GS_Lds[kzstdgpu_InitHuffmanTableAndDecompressLiterals_LdsSize];
 #define ZSTDGPU_LDS GS_Lds
 #include "../zstdgpu_lds_hlsl.h"
 

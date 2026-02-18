@@ -53,20 +53,11 @@ ConstantBuffer<Consts> Constants : register(b0);
 ZSTDGPU_INIT_FSE_TABLE_SRT()
 #include "../zstdgpu_srt_decl_undef.h"
 
-groupshared uint32_t Lds[
-    0 +
-    #if (ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_DEFAULT) || (ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_REFERENCE)
-        + kzstdgpu_MaxCount_FseProbs
-        + kzstdgpu_MaxCount_FseElemsAllDigitBits
-    #elif ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_EXPERIMENTAL
-        + kzstdgpu_MaxCount_FseElems * 2
-        + kzstdgpu_MaxCount_FseElemsOneDigitBits * 2 // kzstdgpu_MaxCount_FseElemsOneDigitBits - masks, kzstdgpu_MaxCount_FseElemsOneDigitBits - ones prefix
-    #endif
-
-    #if IS_MULTI_WAVE
-        + kzstdgpu_WaveCountMax_InitFseTable * 3 + 3
-    #endif
-];
+#if ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_DEFAULT
+groupshared uint32_t Lds[kzstdgpu_InitFseTable_Default_LdsSize];
+#elif ZSTD_BITCNT_NSTATE_METHOD == ZSTD_BITCNT_NSTATE_METHOD_EXPERIMENTAL
+groupshared uint32_t Lds[kzstdgpu_InitFseTable_Experimental_LdsSize];
+#endif
 
 #define ZSTDGPU_LDS Lds
 #include "../zstdgpu_lds_hlsl.h"
