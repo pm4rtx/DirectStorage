@@ -3216,6 +3216,10 @@ void zstdgpu_DecompressHuffmanCompressedLiterals_StoreLdsCache(ZSTDGPU_RO_RAW_BU
     const uint32_t dwordIdxEnd = dwordAlignedEnd >> 2;
     uint32_t dwordIdx = dwordIdxBeg;
 
+    const uint32_t laneCnt = zstdgpu_MinU32(WaveGetLaneCount(), tgSize);
+    const uint32_t waveIdx = WaveReadLaneFirst(threadId / laneCnt);
+    const uint32_t streamBeg = waveIdx * laneCnt;
+
     do
     {
         const uint32_t dwordIdxBatchBeg = dwordIdx;
@@ -3252,10 +3256,7 @@ void zstdgpu_DecompressHuffmanCompressedLiterals_StoreLdsCache(ZSTDGPU_RO_RAW_BU
             zstdgpu_LdsStoreU32(GS_LiteralStoreCache + storeCacheThreadOffset + dwordIdxInCache, dword);
         }
 
-        const uint32_t laneCnt = zstdgpu_MinU32(WaveGetLaneCount(), tgSize);
-        const uint32_t waveIdx = WaveReadLaneFirst(threadId / laneCnt);
-
-        uint32_t i = waveIdx * laneCnt;
+        uint32_t i = streamBeg;
         const uint32_t streamEnd = zstdgpu_MinU32(i + laneCnt, thisGroupLiteralRemain);
 
         ZSTDGPU_LOOP for (; i < streamEnd; ++i)
