@@ -1727,7 +1727,14 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         d3d12aid_ComputeRsPs_Set(&req->DecompressLiterals_LdsStoreCache, cmdList);
         cmdList->SetDescriptorHeaps(1, &req->srts.heap);
         cmdList->SetComputeRootDescriptorTable(0, req->srts.DecompressLiteralsGpuHandle);
-        cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.DecompressedLiterals->GetGPUVirtualAddress());
+        if (NULL != req->resData.gpuOnly.DecompressedLiterals)
+        {
+            cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.DecompressedLiterals->GetGPUVirtualAddress());
+        }
+        else
+        {
+            cmdList->SetComputeRootUnorderedAccessView(1, 0);
+        }
         cmdList->SetComputeRoot32BitConstant(2, req->zstdCmpBlockCount, 0);
 
         ID3D12Resource* argBuf = req->resData.gpuOnly.Counters;
