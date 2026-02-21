@@ -27,9 +27,9 @@
 #define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  srt.inout##name             = ZstdInOut##name;
 #define ZSTDGPU_RW_TYPED_BUFFER_DECL_GLC(hlsl_type, type, name, index)              srt.inout##name             = ZstdInOut##name;
 
-#define ZSTDGPU_RO_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)           srt.in##name##_##alias      = ZstdIn##name##_##alias;
-#define ZSTDGPU_RW_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)           srt.inout##name##_##alias   = ZstdInOut##name##_##alias;
-#define ZSTDGPU_RW_BUFFER_ALIAS_DECL_GLC(hlsl_type, type, name, alias, index)       srt.inout##name##_##alias   = ZstdInOut##name##_##alias;
+#define ZSTDGPU_RO_BUFFER_ALIAS_DECL(type, name, alias, index)                      srt.in##name##_##alias      = ZstdIn##name##_##alias;
+#define ZSTDGPU_RW_BUFFER_ALIAS_DECL(type, name, alias, index)                      srt.inout##name##_##alias   = ZstdInOut##name##_##alias;
+#define ZSTDGPU_RW_BUFFER_ALIAS_DECL_GLC(type, name, alias, index)                  srt.inout##name##_##alias   = ZstdInOut##name##_##alias;
 
 #define ZSTDGPU_RO_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     srt.in##name##_##alias      = ZstdIn##name##_##alias;
 #define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     srt.inout##name##_##alias   = ZstdInOut##name##_##alias;

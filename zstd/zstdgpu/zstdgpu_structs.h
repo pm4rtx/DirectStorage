@@ -1517,7 +1517,7 @@ static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockC
     \
     ZSTDGPU_RW_TYPED_BUFFER_DECL(uint32_t, uint8_t              , DecompressedLiterals          , 0)    \
     \
-    ZSTDGPU_RW_BUFFER_ALIAS_DECL(uint32_t,                      , DecompressedLiterals          , Dwords    , 1)
+    ZSTDGPU_RW_BUFFER_ALIAS_DECL(uint32_t                       , DecompressedLiterals, Dwords  , 1)
 
 #define ZSTDGPU_DECOMPRESS_SEQUENCES_SRT()                                                              \
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , Counters                      , 0)    \
