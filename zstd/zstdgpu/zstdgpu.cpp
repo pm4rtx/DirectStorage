@@ -218,23 +218,28 @@ static uint32_t zstdgpu_Count_SRTs(void)
 {
     uint32_t descCount = 0;
 
-    #define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index)                  descCount += 1;
-    #define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                      descCount += 1;
-    #define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                      descCount += 1;
-    #define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index)                  descCount += 1;
-    #define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     descCount += 1;
-    #define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     descCount += 1;
+    #define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index)                               descCount += 1;
+    #define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                                   descCount += 1;
+    #define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                                   descCount += 1;
+    #define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index)                               descCount += 1;
+
+    #define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  descCount += 1;
+    #define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  descCount += 1;
+    #define ZSTDGPU_RW_TYPED_BUFFER_DECL_GLC(hlsl_type, type, name, index)              descCount += 1;
+
+    #define ZSTDGPU_RO_BUFFER_ALIAS_DECL(type, name, alias, index)                      descCount += 1;
+    #define ZSTDGPU_RW_BUFFER_ALIAS_DECL(type, name, alias, index)                      descCount += 1;
+    #define ZSTDGPU_RW_BUFFER_ALIAS_DECL_GLC(type, name, alias, index)                  descCount += 1;
+
+    #define ZSTDGPU_RO_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     descCount += 1;
+    #define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     descCount += 1;
+    #define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL_GLC(hlsl_type, type, name, alias, index) descCount += 1;
 
     #define ZSTDGPU_SRT(name, SRT) SRT
         ZSTDGPU_SRT_LIST()
     #undef  ZSTDGPU_SRT
 
-    #undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-    #undef ZSTDGPU_RO_TYPED_BUFFER_DECL
-    #undef ZSTDGPU_RW_BUFFER_DECL_GLC
-    #undef ZSTDGPU_RW_BUFFER_DECL
-    #undef ZSTDGPU_RO_BUFFER_DECL
-    #undef ZSTDGPU_RO_RAW_BUFFER_DECL
+    #include "zstdgpu_srt_decl_undef.h"
 
     return descCount;
 }
@@ -289,23 +294,29 @@ static void zstdgpu_ReCreate_SRTs(zstdgpu_SRTs & srts, ID3D12Device *device, con
          cpuDest.ptr += descSize,                                                                                   \
          gpuDest.ptr += descSize);
 
-    #define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index) ZSTDGPU_PUSH_RAW_BUFFER(name)
-    #define ZSTDGPU_RO_BUFFER_DECL(type, name, index) ZSTDGPU_PUSH_STRUCT_BUFFER(type, name, SRV)
-    #define ZSTDGPU_RW_BUFFER_DECL(type, name, index) ZSTDGPU_PUSH_STRUCT_BUFFER(type, name, UAV)
-    #define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index) ZSTDGPU_PUSH_STRUCT_BUFFER(type, name, UAV)
-    #define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index) ZSTDGPU_PUSH_TYPED_BUFFER(type, name, SRV)
-    #define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index) ZSTDGPU_PUSH_TYPED_BUFFER(type, name, UAV)
+    #define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index)                               ZSTDGPU_PUSH_RAW_BUFFER(name)
+
+    #define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                                   ZSTDGPU_PUSH_STRUCT_BUFFER(type, name, SRV)
+    #define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                                   ZSTDGPU_PUSH_STRUCT_BUFFER(type, name, UAV)
+    #define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index)                               ZSTDGPU_PUSH_STRUCT_BUFFER(type, name, UAV)
+
+    #define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  ZSTDGPU_PUSH_TYPED_BUFFER(type, name, SRV)
+    #define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  ZSTDGPU_PUSH_TYPED_BUFFER(type, name, UAV)
+    #define ZSTDGPU_RW_TYPED_BUFFER_DECL_GLC(hlsl_type, type, name, index)              ZSTDGPU_PUSH_TYPED_BUFFER(type, name, UAV)
+
+    #define ZSTDGPU_RO_BUFFER_ALIAS_DECL(type, name, alias, index)                      ZSTDGPU_PUSH_STRUCT_BUFFER(type, name, SRV)
+    #define ZSTDGPU_RW_BUFFER_ALIAS_DECL(type, name, alias, index)                      ZSTDGPU_PUSH_STRUCT_BUFFER(type, name, UAV)
+    #define ZSTDGPU_RW_BUFFER_ALIAS_DECL_GLC(type, name, alias, index)                  ZSTDGPU_PUSH_STRUCT_BUFFER(type, name, UAV)
+
+    #define ZSTDGPU_RO_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     ZSTDGPU_PUSH_TYPED_BUFFER(type, name, SRV)
+    #define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     ZSTDGPU_PUSH_TYPED_BUFFER(type, name, UAV)
+    #define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL_GLC(hlsl_type, type, name, alias, index) ZSTDGPU_PUSH_TYPED_BUFFER(type, name, UAV)
 
     #define ZSTDGPU_SRT(name, SRT) srts.name##GpuHandle = gpuDest; SRT
         ZSTDGPU_SRT_LIST()
     #undef  ZSTDGPU_SRT
 
-    #undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-    #undef ZSTDGPU_RO_TYPED_BUFFER_DECL
-    #undef ZSTDGPU_RW_BUFFER_DECL_GLC
-    #undef ZSTDGPU_RW_BUFFER_DECL
-    #undef ZSTDGPU_RO_BUFFER_DECL
-    #undef ZSTDGPU_RO_RAW_BUFFER_DECL
+    #include "zstdgpu_srt_decl_undef.h"
 }
 
 #define ZSTDGPU_KERNEL_LIST()                                                                                                           \
@@ -1727,15 +1738,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         d3d12aid_ComputeRsPs_Set(&req->DecompressLiterals_LdsStoreCache, cmdList);
         cmdList->SetDescriptorHeaps(1, &req->srts.heap);
         cmdList->SetComputeRootDescriptorTable(0, req->srts.DecompressLiteralsGpuHandle);
-        if (NULL != req->resData.gpuOnly.DecompressedLiterals)
-        {
-            cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.DecompressedLiterals->GetGPUVirtualAddress());
-        }
-        else
-        {
-            cmdList->SetComputeRootUnorderedAccessView(1, 0);
-        }
-        cmdList->SetComputeRoot32BitConstant(2, req->zstdCmpBlockCount, 0);
+        cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 0);
 
         ID3D12Resource* argBuf = req->resData.gpuOnly.Counters;
         ZSTDGPU_KERNEL_SCOPE(DecompressLiterals, cmdList,

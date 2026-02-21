@@ -152,12 +152,23 @@ static const int16_t kzstdgpuFseProbsDefault[] =
 
 #include "zstdgpu_resources.h"
 
-#define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index)                  srt.in##name    = resources.name;
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                      srt.in##name    = resources.name;
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                      srt.inout##name = resources.name;
-#define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index)                  srt.inout##name = resources.name;
-#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     srt.in##name    = resources.name;
-#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     srt.inout##name = resources.name;
+#define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index)                               srt.in##name                = resources.name;
+
+#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                                   srt.in##name                = resources.name;
+#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                                   srt.inout##name             = resources.name;
+#define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index)                               srt.inout##name             = resources.name;
+
+#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  srt.in##name                = resources.name;
+#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  srt.inout##name             = resources.name;
+#define ZSTDGPU_RW_TYPED_BUFFER_DECL_GLC(hlsl_type, type, name, index)              srt.inout##name             = resources.name;
+
+#define ZSTDGPU_RO_BUFFER_ALIAS_DECL(type, name, alias, index)                      srt.in##name##_##alias      = resources.name;
+#define ZSTDGPU_RW_BUFFER_ALIAS_DECL(type, name, alias, index)                      srt.inout##name##_##alias   = resources.name;
+#define ZSTDGPU_RW_BUFFER_ALIAS_DECL_GLC(type, name, alias, index)                  srt.inout##name##_##alias   = resources.name;
+
+#define ZSTDGPU_RO_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     srt.in##name##_##alias      = resources.name;
+#define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     srt.inout##name##_##alias   = resources.name;
+#define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL_GLC(hlsl_type, type, name, alias, index) srt.inout##name##_##alias   = resources.name;
 
 static void zstdgpu_Init_InitResources_SRT(zstdgpu_InitResources_SRT & srt, zstdgpu_ResourceDataCpu & resources)
 {
@@ -209,12 +220,7 @@ static void zstdgpu_Init_FinaliseSequenceOffsets_SRT(zstdgpu_FinaliseSequenceOff
     ZSTDGPU_FINALISE_SEQUENCE_OFFSETS_SRT()
 }
 
-#undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RO_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RW_BUFFER_DECL_GLC
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
-#undef ZSTDGPU_RO_RAW_BUFFER_DECL
+#include "zstdgpu_srt_decl_undef.h"
 
 #define STRINGIZE(x) STRINGIZE2(x)
 #define STRINGIZE2(x) #x

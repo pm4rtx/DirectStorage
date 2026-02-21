@@ -87,6 +87,14 @@
 #   endif
 #endif
 
+#ifndef ZSTDGPU_RW_TYPED_BUFFER_GLC
+#   ifdef __hlsl_dx_compiler
+#       define ZSTDGPU_RW_TYPED_BUFFER_GLC(ShaderType, StorageType) globallycoherent RWBuffer<ShaderType>
+#   else
+#       define ZSTDGPU_RW_TYPED_BUFFER_GLC(ShaderType, StorageType) StorageType *
+#   endif
+#endif
+
 #ifndef ZSTDGPU_RO_BYTE_BUFFER
 #   ifdef __hlsl_dx_compiler
 #       define ZSTDGPU_RO_RAW_BUFFER(type) ByteAddressBuffer /* no type, it's opaquue in HLSL side */
@@ -1507,7 +1515,9 @@ static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockC
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , HuffmanTableCodeAndSymbol     , 7)    \
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , HuffmanTableRankIndex         , 8)    \
     \
-    ZSTDGPU_RW_TYPED_BUFFER_DECL(uint32_t, uint8_t              , DecompressedLiterals          , 0)
+    ZSTDGPU_RW_TYPED_BUFFER_DECL(uint32_t, uint8_t              , DecompressedLiterals          , 0)    \
+    \
+    ZSTDGPU_RW_BUFFER_ALIAS_DECL(uint32_t,                      , DecompressedLiterals          , Dwords    , 1)
 
 #define ZSTDGPU_DECOMPRESS_SEQUENCES_SRT()                                                              \
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , Counters                      , 0)    \
@@ -1594,12 +1604,23 @@ static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockC
     ZSTDGPU_SRT(ExecuteSequences                        , ZSTDGPU_EXECUTE_SEQUENCES_SRT())                          \
     ZSTDGPU_SRT(ComputeDestSequenceOffsets              , ZSTDGPU_COMPUTE_DEST_SEQUENCE_OFFSETS_SRT())
 
-#define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index)                  ZSTDGPU_RO_RAW_BUFFER(type)                in##name;
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                      ZSTDGPU_RO_BUFFER(type)                    in##name;
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                      ZSTDGPU_RW_BUFFER(type)                    inout##name;
-#define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index)                  ZSTDGPU_RW_BUFFER_GLC(type)                inout##name;
-#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     ZSTDGPU_RO_TYPED_BUFFER(hlsl_type, type)   in##name;
-#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)     ZSTDGPU_RW_TYPED_BUFFER(hlsl_type, type)   inout##name;
+#define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index)                               ZSTDGPU_RO_RAW_BUFFER(type)                     in##name;
+
+#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                                   ZSTDGPU_RO_BUFFER(type)                         in##name;
+#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                                   ZSTDGPU_RW_BUFFER(type)                         inout##name;
+#define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index)                               ZSTDGPU_RW_BUFFER_GLC(type)                     inout##name;
+
+#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  ZSTDGPU_RO_TYPED_BUFFER(hlsl_type, type)        in##name;
+#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  ZSTDGPU_RW_TYPED_BUFFER(hlsl_type, type)        inout##name;
+#define ZSTDGPU_RW_TYPED_BUFFER_DECL_GLC(hlsl_type, type, name, index)              ZSTDGPU_RW_TYPED_BUFFER_GLC(hlsl_type, type)    inout##name;
+
+#define ZSTDGPU_RO_BUFFER_ALIAS_DECL(type, name, alias, index)                      ZSTDGPU_RO_BUFFER(type)                         in##name##_##alias;
+#define ZSTDGPU_RW_BUFFER_ALIAS_DECL(type, name, alias, index)                      ZSTDGPU_RW_BUFFER(type)                         inout##name##_##alias;
+#define ZSTDGPU_RW_BUFFER_ALIAS_DECL_GLC(type, name, alias, index)                  ZSTDGPU_RW_BUFFER_GLC(type)                     inout##name##_##alias;
+
+#define ZSTDGPU_RO_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     ZSTDGPU_RO_TYPED_BUFFER(hlsl_type, type)        in##name##_##alias;
+#define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     ZSTDGPU_RW_TYPED_BUFFER(hlsl_type, type)        inout##name##_##alias;
+#define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL_GLC(hlsl_type, type, name, alias, index) ZSTDGPU_RW_TYPED_BUFFER_GLC(hlsl_type, type)    inout##name##_##alias;
 
 typedef struct zstdgpu_ParseFrames_SRT
 {
@@ -1689,11 +1710,6 @@ typedef struct zstdgpu_ComputeDestSequenceOffsets_SRT
     ZSTDGPU_COMPUTE_DEST_SEQUENCE_OFFSETS_SRT();
 } zstdgpu_ComputeDestSequenceOffsets_SRT;
 
-#undef ZSTDGPU_RW_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RO_TYPED_BUFFER_DECL
-#undef ZSTDGPU_RW_BUFFER_DECL_GLC
-#undef ZSTDGPU_RW_BUFFER_DECL
-#undef ZSTDGPU_RO_BUFFER_DECL
-#undef ZSTDGPU_RO_RAW_BUFFER_DECL
+#include "zstdgpu_srt_decl_undef.h"
 
 #endif // #define ZSTDGPU_STRUCTS_H
