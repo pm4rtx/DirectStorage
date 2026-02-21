@@ -63,14 +63,13 @@ ConstantBuffer<Consts> Constants : register(b0);
 
 #include "../zstdgpu_srt_decl_bind.h"
 ZSTDGPU_DECOMPRESS_LITERALS_SRT()
-ZSTDGPU_RW_BUFFER_DECL(uint32_t, DecompressedLiteralsAsDwords, 1)
 #include "../zstdgpu_srt_decl_undef.h"
 
 groupshared uint32_t GS_Lds[kzstdgpu_DecompressLiterals_LdsStoreCache_LdsSize];
 #define ZSTDGPU_LDS GS_Lds
 #include "../zstdgpu_lds_hlsl.h"
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors=9), UAV(u0, numDescriptors=1)),UAV(u1), RootConstants(b0, num32BitConstants=1)")]
+[RootSignature("DescriptorTable(SRV(t0, numDescriptors=9), UAV(u0, numDescriptors=2)), RootConstants(b0, num32BitConstants=1)")]
 [numthreads(kzstdgpu_TgSizeX_DecompressLiterals_LdsStoreCache, 1, 1)]
 void main(uint groupId : SV_GroupId, uint i : SV_GroupThreadId)
 {
@@ -143,7 +142,7 @@ void main(uint groupId : SV_GroupId, uint i : SV_GroupThreadId)
         srt.inLitStreamRemap,
         srt.inLitRefs,
         srt.inoutDecompressedLiterals,
-        ZstdInOutDecompressedLiteralsAsDwords,
+        srt.inoutDecompressedLiterals_Dwords,
         GS_HuffmanTable,
         GS_LiteralStoreCache,
         groupId,

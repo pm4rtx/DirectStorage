@@ -3131,22 +3131,22 @@ void zstdgpu_DecompressHuffmanCompressedLiterals(ZSTDGPU_RO_RAW_BUFFER(uint32_t)
     }
 }
 
-void zstdgpu_DecompressHuffmanCompressedLiterals_StoreLdsCache(ZSTDGPU_RO_RAW_BUFFER(uint32_t) CompressedData,
-                                                                       ZSTDGPU_RO_BUFFER(uint32_t) LitStreamRemap,
-                                                                       ZSTDGPU_RO_BUFFER(zstdgpu_LitStreamInfo) LitRefs,
-                                                                       ZSTDGPU_RW_TYPED_BUFFER(uint32_t, uint8_t) DecompressedLiterals,
-                                                                       ZSTDGPU_RW_BUFFER(uint32_t) DecompressedLiteralsAsDwords,
-                                                                       ZSTDGPU_PARAM_LDS_IN(uint32_t) GS_HuffmanTable,
-                                                                       ZSTDGPU_PARAM_LDS_INOUT(uint32_t) GS_LiteralStoreCache,
-                                                                       uint32_t groupId,
-                                                                       uint32_t threadId,
-                                                                       uint32_t htGroupStart,
-                                                                       uint32_t htLiteralStart,
-                                                                       uint32_t htLiteralCount,
-                                                                       uint32_t bitsMax,
-                                                                       uint32_t tgSize,
-                                                                       uint32_t streamsPerGroup,
-                                                                       uint32_t cacheDwordsPerStream)
+static void zstdgpu_DecompressHuffmanCompressedLiterals_StoreLdsCache(ZSTDGPU_RO_RAW_BUFFER(uint32_t) CompressedData,
+                                                                      ZSTDGPU_RO_BUFFER(uint32_t) LitStreamRemap,
+                                                                      ZSTDGPU_RO_BUFFER(zstdgpu_LitStreamInfo) LitRefs,
+                                                                      ZSTDGPU_RW_TYPED_BUFFER(uint32_t, uint8_t) DecompressedLiterals,
+                                                                      ZSTDGPU_RW_BUFFER(uint32_t) DecompressedLiteralsAsDwords,
+                                                                      ZSTDGPU_PARAM_LDS_IN(uint32_t) GS_HuffmanTable,
+                                                                      ZSTDGPU_PARAM_LDS_INOUT(uint32_t) GS_LiteralStoreCache,
+                                                                      uint32_t groupId,
+                                                                      uint32_t threadId,
+                                                                      uint32_t htGroupStart,
+                                                                      uint32_t htLiteralStart,
+                                                                      uint32_t htLiteralCount,
+                                                                      uint32_t bitsMax,
+                                                                      uint32_t tgSize,
+                                                                      uint32_t streamsPerGroup,
+                                                                      uint32_t cacheDwordsPerStream)
 {
     ZSTDGPU_UNUSED(threadId);
     const uint32_t maxBitcntMask = (1u << bitsMax) - 1u;

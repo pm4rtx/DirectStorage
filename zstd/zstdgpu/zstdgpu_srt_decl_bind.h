@@ -16,9 +16,20 @@
  * then include zstdgpu_srt_decl_undef.h afterwards to clean up.
  */
 
-#define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index)              ZSTDGPU_RO_RAW_BUFFER(type)                ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                  ZSTDGPU_RO_BUFFER(type)                    ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                  ZSTDGPU_RW_BUFFER(type)                    ZstdInOut##name : register(u##index);
-#define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index)              ZSTDGPU_RW_BUFFER_GLC(type)                ZstdInOut##name : register(u##index);
-#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index) ZSTDGPU_RO_TYPED_BUFFER(hlsl_type, type)   ZstdIn##name    : register(t##index);
-#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index) ZSTDGPU_RW_TYPED_BUFFER(hlsl_type, type)   ZstdInOut##name : register(u##index);
+#define ZSTDGPU_RO_RAW_BUFFER_DECL(type, name, index)                               ZSTDGPU_RO_RAW_BUFFER(type)                     ZstdIn##name    : register(t##index);
+
+#define ZSTDGPU_RO_BUFFER_DECL(type, name, index)                                   ZSTDGPU_RO_BUFFER(type)                         ZstdIn##name    : register(t##index);
+#define ZSTDGPU_RW_BUFFER_DECL(type, name, index)                                   ZSTDGPU_RW_BUFFER(type)                         ZstdInOut##name : register(u##index);
+#define ZSTDGPU_RW_BUFFER_DECL_GLC(type, name, index)                               ZSTDGPU_RW_BUFFER_GLC(type)                     ZstdInOut##name : register(u##index);
+
+#define ZSTDGPU_RO_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  ZSTDGPU_RO_TYPED_BUFFER(hlsl_type, type)        ZstdIn##name    : register(t##index);
+#define ZSTDGPU_RW_TYPED_BUFFER_DECL(hlsl_type, type, name, index)                  ZSTDGPU_RW_TYPED_BUFFER(hlsl_type, type)        ZstdInOut##name : register(u##index);
+#define ZSTDGPU_RW_TYPED_BUFFER_DECL_GLC(hlsl_type, type, name, index)              ZSTDGPU_RW_TYPED_BUFFER_GLC(hlsl_type, type)    ZstdInOut##name : register(u##index);
+
+#define ZSTDGPU_RO_BUFFER_ALIAS_DECL(type, name, alias, index)                      ZSTDGPU_RO_BUFFER(type)                         ZstdIn##name##_##alias    : register(t##index);
+#define ZSTDGPU_RW_BUFFER_ALIAS_DECL(type, name, alias, index)                      ZSTDGPU_RW_BUFFER(type)                         ZstdInOut##name##_##alias : register(u##index);
+#define ZSTDGPU_RW_BUFFER_ALIAS_DECL_GLC(type, name, alias, index)                  ZSTDGPU_RW_BUFFER_GLC(type)                     ZstdInOut##name##_##alias : register(u##index);
+
+#define ZSTDGPU_RO_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     ZSTDGPU_RO_TYPED_BUFFER(hlsl_type, type)        ZstdIn##name##_##alias    : register(t##index);
+#define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL(hlsl_type, type, name, alias, index)     ZSTDGPU_RW_TYPED_BUFFER(hlsl_type, type)        ZstdInOut##name##_##alias : register(u##index);
+#define ZSTDGPU_RW_TYPED_BUFFER_ALIAS_DECL_GLC(hlsl_type, type, name, alias, index) ZSTDGPU_RW_TYPED_BUFFER_GLC(hlsl_type, type)    ZstdInOut##name##_##alias : register(u##index);
