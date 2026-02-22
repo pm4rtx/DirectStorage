@@ -162,8 +162,11 @@ void zstdgpu_Demo_PlatformTerm(struct ID3D12Device *device)
 
         IDXGIDebug *dxgiDebug = NULL;
         LOAD_F(DXGIGetDebugInterface, L"dxgidebug.dll");
-        D3D12AID_CHECK(fnDXGIGetDebugInterface(D3D12AID_IID_PPV_ARGS(&dxgiDebug)));
-        dxgiDebug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_ALL);
+        if (NULL != fnDXGIGetDebugInterface)
+        {
+            D3D12AID_CHECK(fnDXGIGetDebugInterface(D3D12AID_IID_PPV_ARGS(&dxgiDebug)));
+            dxgiDebug->ReportLiveObjects(DXGI_DEBUG_ALL, DXGI_DEBUG_RLO_ALL);
+        }
 
         D3D12AID_SAFE_RELEASE(device);
 

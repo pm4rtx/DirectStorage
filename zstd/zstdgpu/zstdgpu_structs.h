@@ -47,6 +47,88 @@
 #   endif
 #endif
 
+#ifndef ZSTDGPU_PRAGMA_GNUC
+#   if defined(__clang__) || defined(__GNUC__)  || defined(__hlsl_dx_compiler)
+#       define ZSTDGPU_PRAGMA_GNUC(x) _Pragma(#x)
+#   else
+#       define ZSTDGPU_PRAGMA_GNUC(x)
+#   endif
+#endif /* ZSTDGPU_PRAGMA_GNUC */
+
+#ifndef ZSTDGPU_PRAGMA_MSVC
+#   if defined(_MSC_VER)
+#       define ZSTDGPU_PRAGMA_MSVC(x) __pragma(x)
+#   else
+#define ZSTDGPU_PRAGMA_MSVC(x)
+#   endif
+#endif /* ZSTDGPU_PRAGMA_MSVC */
+
+#ifndef ZSTDGPU_WARN_PUSH_DXC
+#   ifdef __hlsl_dx_compiler
+#      define ZSTDGPU_WARN_PUSH_DXC()  ZSTDGPU_PRAGMA_GNUC(dxc diagnostic push)
+#      define ZSTDGPU_WARN_STOP_DXC(w) ZSTDGPU_PRAGMA_GNUC(dxc diagnostic ignored #w)
+#      define ZSTDGPU_WARN_POP_DXC()   ZSTDGPU_PRAGMA_GNUC(dxc diagnostic pop)
+#   else
+#      define ZSTDGPU_WARN_PUSH_DXC()
+#      define ZSTDGPU_WARN_STOP_DXC(w)
+#      define ZSTDGPU_WARN_POP_DXC()
+#   endif
+#endif /* ZSTDGPU_WARN_PUSH_DXC */
+
+#ifndef ZSTDGPU_WARN_DISABLE_DXC
+#   define ZSTDGPU_WARN_DISABLE_DXC(w, statement) ZSTDGPU_WARN_PUSH_DXC() ZSTDGPU_WARN_STOP_DXC(w) statement ZSTDGPU_WARN_POP_DXC()
+#endif /* ZSTDGPU_WARN_DISABLE_DXC */
+
+#ifndef ZSTDGPU_WARN_PUSH_MSVC
+#   ifdef _MSC_VER
+#      define ZSTDGPU_WARN_PUSH_MSVC()  ZSTDGPU_PRAGMA_MSVC(warning(push))
+#      define ZSTDGPU_WARN_STOP_MSVC(w) ZSTDGPU_PRAGMA_MSVC(warning(disable : w))
+#      define ZSTDGPU_WARN_POP_MSVC()   ZSTDGPU_PRAGMA_MSVC(warning(pop))
+#   else
+#      define ZSTDGPU_WARN_PUSH_MSVC()
+#      define ZSTDGPU_WARN_STOP_MSVC(w)
+#      define ZSTDGPU_WARN_POP_MSVC()
+#   endif
+#endif /* ZSTDGPU_WARN_PUSH_MSVC */
+
+#ifndef ZSTDGPU_WARN_DISABLE_MSVC
+#   define ZSTDGPU_WARN_DISABLE_MSVC(w, statement) ZSTDGPU_WARN_PUSH_MSVC() ZSTDGPU_WARN_STOP_MSVC(w) statement ZSTDGPU_WARN_POP_MSVC()
+#endif /* ZSTDGPU_WARN_DISABLE_MSVC */
+
+#ifndef ZSTDGPU_GLC
+#   ifdef __hlsl_dx_compiler
+#       define ZSTDGPU_GLC ZSTDGPU_WARN_DISABLE_DXC(-Wignored-attributes, globallycoherent)
+#   else
+#       define ZSTDGPU_GLC
+#   endif
+#endif /* ZSTDGPU_GLC */
+
+#ifndef ZSTDGPU_ENUM
+#   ifdef _MSC_VER
+#       define ZSTDGPU_ENUM(e)          ZSTDGPU_WARN_DISABLE_MSVC(26812, zstdgpu_##e)
+#       define ZSTDGPU_ENUM_CONST(ec)   ZSTDGPU_WARN_DISABLE_MSVC(26812, kzstdgpu_##ec)
+#   else
+#       define ZSTDGPU_ENUM(e)          zstdgpu_##e
+#       define ZSTDGPU_ENUM_CONST(ec)   kzstdgpu_##ec
+#   endif
+#endif /* ZSTDGPU_ENUM */
+
+#ifndef ZSTDGPU_INTENDED_SHIFT
+#   ifdef _MSC_VER
+#       define ZSTDGPU_INTENDED_SHIFT(e) ZSTDGPU_WARN_DISABLE_MSVC(26450, (e))
+#   else
+#       define ZSTDGPU_INTENDED_SHIFT(e) (e)
+#   endif
+#endif /* ZSTDGPU_INTENDED_SHIFT */
+
+#ifndef ZSTDGPU_INTENDED_MUL32
+#   ifdef _MSC_VER
+#       define ZSTDGPU_INTENDED_MUL32(e) ZSTDGPU_WARN_DISABLE_MSVC(26451, (e))
+#   else
+#       define ZSTDGPU_INTENDED_MUL32(e) (e)
+#   endif
+#endif /* ZSTDGPU_INTENDED_MUL32 */
+
 #ifndef ZSTDGPU_RO_BUFFER
 #   ifdef __hlsl_dx_compiler
 #       define ZSTDGPU_RO_BUFFER(type) StructuredBuffer<type>
@@ -65,7 +147,7 @@
 
 #ifndef ZSTDGPU_RW_BUFFER_GLC
 #   ifdef __hlsl_dx_compiler
-#       define ZSTDGPU_RW_BUFFER_GLC(type) globallycoherent RWStructuredBuffer<type>
+#       define ZSTDGPU_RW_BUFFER_GLC(type) ZSTDGPU_GLC RWStructuredBuffer<type>
 #   else
 #       define ZSTDGPU_RW_BUFFER_GLC(type) type *
 #   endif
@@ -89,7 +171,7 @@
 
 #ifndef ZSTDGPU_RW_TYPED_BUFFER_GLC
 #   ifdef __hlsl_dx_compiler
-#       define ZSTDGPU_RW_TYPED_BUFFER_GLC(ShaderType, StorageType) globallycoherent RWBuffer<ShaderType>
+#       define ZSTDGPU_RW_TYPED_BUFFER_GLC(ShaderType, StorageType) ZSTDGPU_GLC RWBuffer<ShaderType>
 #   else
 #       define ZSTDGPU_RW_TYPED_BUFFER_GLC(ShaderType, StorageType) StorageType *
 #   endif
@@ -336,13 +418,10 @@ static const uint32_t kzstdgpu_TgSizeX_ExecuteSequences = 32;
 #define ZSTDGPU_TG_MULTIPLE(elemCount, tgSize) (((elemCount) + (tgSize) - 1) & ~(tgSize - 1))
 
 #ifdef __hlsl_dx_compiler
-#   define ZSTDGPU_FOR_WORK_ITEMS(workItemId, workItemCount, groupThreadId, groupThreadCount)                  \
-        _Pragma("dxc diagnostic push")                                                                          \
-        _Pragma("dxc diagnostic ignored \"-Wfor-redefinition\"")                                                \
-        for (uint32_t workItemId = groupThreadId; workItemId < workItemCount; workItemId += groupThreadCount)   \
-        _Pragma("dxc diagnostic pop")
+#   define ZSTDGPU_FOR_WORK_ITEMS(workItemId, workItemCount, groupThreadId, groupThreadCount)   \
+        for (ZSTDGPU_WARN_DISABLE_DXC(-Wfor-redefinition, uint32_t workItemId = groupThreadId); workItemId < workItemCount; workItemId += groupThreadCount)
 #else
-#   define ZSTDGPU_FOR_WORK_ITEMS(workItemId, workItemCount, groupThreadId, groupThreadCount)                  \
+#   define ZSTDGPU_FOR_WORK_ITEMS(workItemId, workItemCount, groupThreadId, groupThreadCount)   \
         for (uint32_t workItemId = 0; workItemId < workItemCount; workItemId += 1u)
 #endif
 
@@ -438,7 +517,8 @@ static inline uint64_t zstdgpu_LoBitFieldWideMaskU64(uint32_t width)
 static inline uint32_t zstdgpu_HiBitFieldMaskU32(uint32_t width)
 {
     ZSTDGPU_ASSERT(width <= 31u);
-    return (~0u << 1u) << (31u - width);
+    /**NOTE(pamartis): disable the warning because the overflow here is intended behaviour */
+    return ZSTDGPU_INTENDED_SHIFT(~0u << 1u) << (31u - width);
 }
 
 static inline uint64_t zstdgpu_HiBitFieldMaskU64(uint32_t width)
@@ -1648,14 +1728,7 @@ typedef struct zstdgpu_InitResources_SRT
 
 typedef struct zstdgpu_ParseCompressedBlocks_SRT
 {
-#ifdef __hlsl_dx_compiler
-    #pragma dxc diagnostic push
-    #pragma dxc diagnostic ignored "-Wignored-attributes"
-#endif
     ZSTDGPU_PARSE_COMPRESSED_BLOCKS_SRT()
-#ifdef __hlsl_dx_compiler
-    #pragma dxc diagnostic pop
-#endif
     uint32_t    compressedBlockCount;
     uint32_t    compressedBufferSizeInBytes;
     uint32_t    frameCount;

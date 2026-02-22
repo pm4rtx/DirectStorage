@@ -699,6 +699,10 @@ static void zstdgpu_ResourceDataGpu_Init(zstdgpu_ResourceDataGpu *outResData, co
 
 static void zstdgpu_ResourceDataGpu_Term(zstdgpu_ResourceDataGpu *outResData, uint32_t stageIndex)
 {
+    ZSTDGPU_ASSERT(stageIndex < kzstdgpu_ResourceAllocation_StageCount);
+    if (stageIndex >= kzstdgpu_ResourceAllocation_StageCount)
+        return;
+
     // release the resources
     #define ZSTDGPU_BUFFER(type, name) D3D12AID_SAFE_RELEASE(outResData->gpuOnly.name);
         if (stageIndex == 0)
@@ -804,7 +808,7 @@ static void dealloc(void *ptr)
     MEMORY_BASIC_INFORMATION info;
     SIZE_T size = VirtualQuery(ptr, &info, sizeof(info));
     ZSTDGPU_ASSERT(0 != size);
-    VirtualFree(info.BaseAddress, info.RegionSize, MEM_DECOMMIT | MEM_RELEASE);
+    VirtualFree(info.BaseAddress, 0, MEM_RELEASE);
 #else
     return free(ptr);
 #endif
