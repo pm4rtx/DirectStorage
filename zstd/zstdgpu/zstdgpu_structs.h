@@ -55,6 +55,14 @@
 #   endif
 #endif /* ZSTDGPU_PRAGMA_GNUC */
 
+#ifndef ZSTDGPU_PRAGMA_MSVC
+#   if defined(_MSC_VER)
+#       define ZSTDGPU_PRAGMA_MSVC(x) __pragma(x)
+#   else
+#define ZSTDGPU_PRAGMA_MSVC(x)
+#   endif
+#endif /* ZSTDGPU_PRAGMA_MSVC */
+
 #ifndef ZSTDGPU_WARN_PUSH_DXC
 #   ifdef __hlsl_dx_compiler
 #      define ZSTDGPU_WARN_PUSH_DXC()  ZSTDGPU_PRAGMA_GNUC(dxc diagnostic push)
@@ -71,6 +79,22 @@
 #   define ZSTDGPU_WARN_DISABLE_DXC(w, statement) ZSTDGPU_WARN_PUSH_DXC() ZSTDGPU_WARN_STOP_DXC(w) statement ZSTDGPU_WARN_POP_DXC()
 #endif /* ZSTDGPU_WARN_DISABLE_DXC */
 
+#ifndef ZSTDGPU_WARN_PUSH_MSVC
+#   ifdef _MSC_VER
+#      define ZSTDGPU_WARN_PUSH_MSVC()  ZSTDGPU_PRAGMA_MSVC(warning(push))
+#      define ZSTDGPU_WARN_STOP_MSVC(w) ZSTDGPU_PRAGMA_MSVC(warning(disable : w))
+#      define ZSTDGPU_WARN_POP_MSVC()   ZSTDGPU_PRAGMA_MSVC(warning(pop))
+#   else
+#      define ZSTDGPU_WARN_PUSH_MSVC()
+#      define ZSTDGPU_WARN_STOP_MSVC(w)
+#      define ZSTDGPU_WARN_POP_MSVC()
+#   endif
+#endif /* ZSTDGPU_WARN_PUSH_MSVC */
+
+#ifndef ZSTDGPU_WARN_DISABLE_MSVC
+#   define ZSTDGPU_WARN_DISABLE_MSVC(w, statement) ZSTDGPU_WARN_PUSH_MSVC() ZSTDGPU_WARN_STOP_MSVC(w) statement ZSTDGPU_WARN_POP_MSVC()
+#endif /* ZSTDGPU_WARN_DISABLE_MSVC */
+
 #ifndef ZSTDGPU_GLC
 #   ifdef __hlsl_dx_compiler
 #       define ZSTDGPU_GLC ZSTDGPU_WARN_DISABLE_DXC(-Wignored-attributes, globallycoherent)
@@ -78,6 +102,16 @@
 #       define ZSTDGPU_GLC
 #   endif
 #endif /* ZSTDGPU_GLC */
+
+#ifndef ZSTDGPU_UNSCOPED_ENUM
+#   ifdef _MSC_VER
+#       define ZSTDGPU_ENUM(e)          ZSTDGPU_WARN_DISABLE_MSVC(26812, zstdgpu_##e)
+#       define ZSTDGPU_ENUM_CONST(ec)   ZSTDGPU_WARN_DISABLE_MSVC(26812, kzstdgpu_##ec)
+#   else
+#       define ZSTDGPU_ENUM(e)          zstdgpu_##e
+#       define ZSTDGPU_ENUM_CONST(ec)   kzstdgpu_##ec
+#   endif
+#endif /* ZSTDGPU_ENUM */
 
 #ifndef ZSTDGPU_RO_BUFFER
 #   ifdef __hlsl_dx_compiler

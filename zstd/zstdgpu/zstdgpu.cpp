@@ -457,10 +457,10 @@ struct zstdgpu_PerRequestContextImpl
     uint32_t                zstdUncompressedSequenceCount;
     uint32_t                zstdSeqStreamCount;
 
-    zstdgpu_SetupInputsType setupInputsType;
+    ZSTDGPU_ENUM(SetupInputsType) setupInputsType;
 };
 
-static uint32_t zstdgpu_GetStageCountFromSetupInputsType(zstdgpu_SetupInputsType type)
+static uint32_t zstdgpu_GetStageCountFromSetupInputsType(ZSTDGPU_ENUM(SetupInputsType) type)
 {
     ZSTDGPU_UNUSED(type);
     return 3u;
@@ -476,7 +476,7 @@ uint32_t zstdgpu_GetPerRequestContextRequiredMemorySizeInBytes(void)
     return sizeof(zstdgpu_PerRequestContextImpl);
 }
 
-zstdgpu_Status zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *outPersistentContext, ID3D12Device *device, void *memoryBlock, uint32_t memoryBlockSizeInBytes)
+ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *outPersistentContext, ID3D12Device *device, void *memoryBlock, uint32_t memoryBlockSizeInBytes)
 {
     uint32_t proceed = 1;
 
@@ -520,13 +520,13 @@ zstdgpu_Status zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *outPer
         #undef ZSTDGPU_KERNEL
 
         *outPersistentContext = context;
-        return kzstdgpu_StatusSuccess;
+        return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
-    return kzstdgpu_StatusInvalidArgument;
+    return ZSTDGPU_ENUM_CONST(StatusInvalidArgument);
 }
 
 
-zstdgpu_Status zstdgpu_DestroyPersistentContext(void **outMemoryBlock, uint32_t *outMemoryBlockSizeInBytes, zstdgpu_PersistentContext inPersistentContext)
+ZSTDGPU_ENUM(Status) zstdgpu_DestroyPersistentContext(void **outMemoryBlock, uint32_t *outMemoryBlockSizeInBytes, zstdgpu_PersistentContext inPersistentContext)
 {
     const uint32_t proceed = inPersistentContext->thisMemoryBlock == (void *)inPersistentContext;
     ZSTDGPU_ASSERT(proceed > 0);
@@ -548,12 +548,12 @@ zstdgpu_Status zstdgpu_DestroyPersistentContext(void **outMemoryBlock, uint32_t 
 
         inPersistentContext->thisMemoryBlock = NULL;
 
-        return kzstdgpu_StatusSuccess;
+        return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
-    return kzstdgpu_StatusInvalidArgument;
+    return ZSTDGPU_ENUM_CONST(StatusInvalidArgument);
 }
 
-zstdgpu_Status zstdgpu_CreatePerRequestContext(zstdgpu_PerRequestContext *outPerRequestContext, zstdgpu_PersistentContext persistentContext, void *memoryBlock, uint32_t memoryBlockSizeInBytes)
+ZSTDGPU_ENUM(Status) zstdgpu_CreatePerRequestContext(zstdgpu_PerRequestContext *outPerRequestContext, zstdgpu_PersistentContext persistentContext, void *memoryBlock, uint32_t memoryBlockSizeInBytes)
 {
     uint32_t proceed = 1;
 
@@ -650,15 +650,15 @@ zstdgpu_Status zstdgpu_CreatePerRequestContext(zstdgpu_PerRequestContext *outPer
         context->zstdUncompressedLiteralsByteCount  = 0;
         context->zstdUncompressedSequenceCount      = 0;
         context->zstdSeqStreamCount                 = 0;
-        context->setupInputsType                    = kzstdgpu_SetupInputsType_Frames_Unknown;
+        context->setupInputsType                    = ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_Unknown);
 
         *outPerRequestContext = context;
-        return kzstdgpu_StatusSuccess;
+        return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
-    return kzstdgpu_StatusInvalidArgument;
+    return ZSTDGPU_ENUM_CONST(StatusInvalidArgument);
 }
 
-zstdgpu_Status zstdgpu_DestroyPerRequestContext(void **outMemoryBlock, uint32_t *outMemoryBlockSizeInBytes, zstdgpu_PerRequestContext inPerRequestContext)
+ZSTDGPU_ENUM(Status) zstdgpu_DestroyPerRequestContext(void **outMemoryBlock, uint32_t *outMemoryBlockSizeInBytes, zstdgpu_PerRequestContext inPerRequestContext)
 {
     const uint32_t proceed = inPerRequestContext->thisMemoryBlock == (void *)inPerRequestContext;
     ZSTDGPU_ASSERT(proceed > 0);
@@ -696,12 +696,12 @@ zstdgpu_Status zstdgpu_DestroyPerRequestContext(void **outMemoryBlock, uint32_t 
         if (NULL != outMemoryBlockSizeInBytes)
             *outMemoryBlockSizeInBytes = zstdgpu_GetPersistentContextRequiredMemorySizeInBytes();
 
-        return kzstdgpu_StatusSuccess;
+        return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
-    return kzstdgpu_StatusInvalidArgument;
+    return ZSTDGPU_ENUM_CONST(StatusInvalidArgument);
 }
 
-zstdgpu_Status zstdgpu_SetupInputsAsFramesInCpuMemory(uint32_t *outStageCount, zstdgpu_PerRequestContext inPerRequestContext, uint32_t frameCount, uint32_t framesMemorySizeInBytes, zstdgpu_UploadFrames *uploadCallback, void *uploadUserdata)
+ZSTDGPU_ENUM(Status) zstdgpu_SetupInputsAsFramesInCpuMemory(uint32_t *outStageCount, zstdgpu_PerRequestContext inPerRequestContext, uint32_t frameCount, uint32_t framesMemorySizeInBytes, zstdgpu_UploadFrames *uploadCallback, void *uploadUserdata)
 {
     uint32_t proceed = 1;
     proceed = proceed && (inPerRequestContext->thisMemoryBlock == (void *)inPerRequestContext);
@@ -714,7 +714,7 @@ zstdgpu_Status zstdgpu_SetupInputsAsFramesInCpuMemory(uint32_t *outStageCount, z
 
     if (proceed)
     {
-        if (kzstdgpu_SetupInputsType_Frames_GpuMemory == inPerRequestContext->setupInputsType)
+        if (ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_GpuMemory) == inPerRequestContext->setupInputsType)
         {
             // NOTE(pamartis): we only release ID3D12Resource with the PerRequest context.
             // ID3D12Resource within zstdgpu_ResourceDataGpu will be released with the zstdgpu_ResourceDataGpu_Term call.
@@ -729,15 +729,15 @@ zstdgpu_Status zstdgpu_SetupInputsAsFramesInCpuMemory(uint32_t *outStageCount, z
         inPerRequestContext->compressedFramesRefs           = NULL;
         inPerRequestContext->zstdFrameCount                 = frameCount;
         inPerRequestContext->zstdCompressedFramesByteCount  = framesMemorySizeInBytes;
-        inPerRequestContext->setupInputsType                = kzstdgpu_SetupInputsType_Frames_CpuMemory;
+        inPerRequestContext->setupInputsType                = ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_CpuMemory);
 
         *outStageCount = 3u;
-        return kzstdgpu_StatusSuccess;
+        return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
-    return kzstdgpu_StatusInvalidArgument;
+    return ZSTDGPU_ENUM_CONST(StatusInvalidArgument);
 }
 
-zstdgpu_Status zstdgpu_SetupInputsAsFramesInGpuMemory(uint32_t *outStageCount, zstdgpu_PerRequestContext inPerRequestContext, struct ID3D12Resource *framesMemory, uint32_t framesMemorySizeInBytes, struct ID3D12Resource *frames, uint32_t frameCount)
+ZSTDGPU_ENUM(Status) zstdgpu_SetupInputsAsFramesInGpuMemory(uint32_t *outStageCount, zstdgpu_PerRequestContext inPerRequestContext, struct ID3D12Resource *framesMemory, uint32_t framesMemorySizeInBytes, struct ID3D12Resource *frames, uint32_t frameCount)
 {
     uint32_t proceed = 1;
     proceed = proceed && (inPerRequestContext->thisMemoryBlock == (void *)inPerRequestContext);
@@ -750,7 +750,7 @@ zstdgpu_Status zstdgpu_SetupInputsAsFramesInGpuMemory(uint32_t *outStageCount, z
 
     if (proceed)
     {
-        if (kzstdgpu_SetupInputsType_Frames_GpuMemory == inPerRequestContext->setupInputsType)
+        if (ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_GpuMemory) == inPerRequestContext->setupInputsType)
         {
             // NOTE(pamartis): we only release ID3D12Resource with the PerRequest context.
             // ID3D12Resource within zstdgpu_ResourceDataGpu will be released with the zstdgpu_ResourceDataGpu_Term call.
@@ -767,15 +767,15 @@ zstdgpu_Status zstdgpu_SetupInputsAsFramesInGpuMemory(uint32_t *outStageCount, z
         inPerRequestContext->compressedFramesRefs->AddRef();
         inPerRequestContext->zstdFrameCount                 = frameCount;
         inPerRequestContext->zstdCompressedFramesByteCount  = framesMemorySizeInBytes;
-        inPerRequestContext->setupInputsType                = kzstdgpu_SetupInputsType_Frames_GpuMemory;
+        inPerRequestContext->setupInputsType                = ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_GpuMemory);
 
         *outStageCount = 3u;
-        return kzstdgpu_StatusSuccess;
+        return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
-    return kzstdgpu_StatusInvalidArgument;
+    return ZSTDGPU_ENUM_CONST(StatusInvalidArgument);
 }
 
-ZSTDGPU_API zstdgpu_Status zstdgpu_SetupOutputs(zstdgpu_PerRequestContext inPerRequestContext, struct ID3D12Resource *framesMemory, uint32_t framesMemorySizeInBytes, struct ID3D12Resource *frames, uint32_t frameCount)
+ZSTDGPU_API ZSTDGPU_ENUM(Status) zstdgpu_SetupOutputs(zstdgpu_PerRequestContext inPerRequestContext, struct ID3D12Resource *framesMemory, uint32_t framesMemorySizeInBytes, struct ID3D12Resource *frames, uint32_t frameCount)
 {
     uint32_t proceed = 1;
     proceed = proceed && (inPerRequestContext->thisMemoryBlock == (void *)inPerRequestContext);
@@ -800,12 +800,12 @@ ZSTDGPU_API zstdgpu_Status zstdgpu_SetupOutputs(zstdgpu_PerRequestContext inPerR
 
         inPerRequestContext->zstdUncompressedFrameCount         = frameCount;
         inPerRequestContext->zstdUncompressedFramesByteCount    = framesMemorySizeInBytes;
-        return kzstdgpu_StatusSuccess;
+        return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
-    return kzstdgpu_StatusInvalidArgument;
+    return ZSTDGPU_ENUM_CONST(StatusInvalidArgument);
 }
 
-zstdgpu_Status zstdgpu_GetGpuMemoryRequirement(uint32_t *outDefaultHeapByteCount, uint32_t *outUploadHeapByteCount, uint32_t *outReadbackHeapByteCount, uint32_t *outShaderVisibleDescriptorCount, zstdgpu_PerRequestContext req, uint32_t stageIndex)
+ZSTDGPU_ENUM(Status) zstdgpu_GetGpuMemoryRequirement(uint32_t *outDefaultHeapByteCount, uint32_t *outUploadHeapByteCount, uint32_t *outReadbackHeapByteCount, uint32_t *outShaderVisibleDescriptorCount, zstdgpu_PerRequestContext req, uint32_t stageIndex)
 {
     uint32_t proceed = 1;
     uint32_t stageCount = zstdgpu_GetStageCountFromSetupInputsType(req->setupInputsType);
@@ -827,7 +827,7 @@ zstdgpu_Status zstdgpu_GetGpuMemoryRequirement(uint32_t *outDefaultHeapByteCount
         #define CNTRS(name) req->resData.gpu2Cpu.CountersCpu[kzstdgpu_CounterIndex_##name]
         if (stageIndex == 0)
         {
-            zstdgpu_ResourceInfo_Stage_0_Init(&req->resInfo, req->zstdFrameCount, req->zstdCompressedFramesByteCount, kzstdgpu_SetupInputsType_Frames_GpuMemory == req->setupInputsType ? 1u : 0u);
+            zstdgpu_ResourceInfo_Stage_0_Init(&req->resInfo, req->zstdFrameCount, req->zstdCompressedFramesByteCount, ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_GpuMemory) == req->setupInputsType ? 1u : 0u);
         }
         else if (stageIndex == 1)
         {
@@ -861,16 +861,16 @@ zstdgpu_Status zstdgpu_GetGpuMemoryRequirement(uint32_t *outDefaultHeapByteCount
         *outShaderVisibleDescriptorCount    = zstdgpu_Count_SRTs();
 
         #undef CNTRS
-        return kzstdgpu_StatusSuccess;
+        return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
-    return kzstdgpu_StatusInvalidArgument;
+    return ZSTDGPU_ENUM_CONST(StatusInvalidArgument);
 }
 
 static void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext inPerRequestContext, ID3D12GraphicsCommandList *cmdList);
 static void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext inPerRequestContext, ID3D12GraphicsCommandList *cmdList);
 static void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext inPerRequestContext, ID3D12GraphicsCommandList *cmdList);
 
-zstdgpu_Status zstdgpu_SubmitWithExternalMemory(zstdgpu_PerRequestContext req,
+ZSTDGPU_ENUM(Status) zstdgpu_SubmitWithExternalMemory(zstdgpu_PerRequestContext req,
                                                 uint32_t stageIndex,
                                                 struct ID3D12GraphicsCommandList *cmdList,
                                                 struct ID3D12Heap *defaultHeap,
@@ -888,7 +888,7 @@ zstdgpu_Status zstdgpu_SubmitWithExternalMemory(zstdgpu_PerRequestContext req,
     uint32_t uploadHeapMemReq = 0;
     uint32_t readbackHeapMemReq = 0;
     uint32_t shaderVisibleHeapDscCount = 0;
-    proceed = kzstdgpu_StatusSuccess == zstdgpu_GetGpuMemoryRequirement(&defaultHeapMemReq, &uploadHeapMemReq, &readbackHeapMemReq, &shaderVisibleHeapDscCount, req, stageIndex);
+    proceed = ZSTDGPU_ENUM_CONST(StatusSuccess) == zstdgpu_GetGpuMemoryRequirement(&defaultHeapMemReq, &uploadHeapMemReq, &readbackHeapMemReq, &shaderVisibleHeapDscCount, req, stageIndex);
     proceed = proceed && (req->thisMemoryBlock == (void *)req);
     proceed = proceed && (req->zstdFrameCount > 0);
     proceed = proceed && (req->zstdCompressedFramesByteCount > 0);
@@ -930,7 +930,7 @@ zstdgpu_Status zstdgpu_SubmitWithExternalMemory(zstdgpu_PerRequestContext req,
         req->resData.gpu2Cpu_HeapOffset[stageIndex] = readbackHeap_OffsetInBytes;
 
         zstdgpu_ResourceDataGpu_Init(&req->resData, &req->resInfo, req->device, stageIndex);
-        if (kzstdgpu_SetupInputsType_Frames_GpuMemory == req->setupInputsType && stageIndex == 0u)
+        if (ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_GpuMemory) == req->setupInputsType && stageIndex == 0u)
         {
             zstdgpu_ResourceDataGpu_ReInitInputExternal(&req->resData, req->compressedFramesData, req->compressedFramesRefs);
         }
@@ -943,7 +943,7 @@ zstdgpu_Status zstdgpu_SubmitWithExternalMemory(zstdgpu_PerRequestContext req,
         // NOTE(pamartis): we need to do call upload callback right after initialising resources of stage == 0
         if (stageIndex == 0)
         {
-            if (kzstdgpu_SetupInputsType_Frames_CpuMemory == req->setupInputsType)
+            if (ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_CpuMemory) == req->setupInputsType)
             {
                 req->uploadCallback(req->resData.cpu2Gpu.CompressedDataCpu, req->zstdCompressedFramesByteCount, req->resData.cpu2Gpu.FramesRefsCpu, req->zstdFrameCount, req->uploadUserdata);
             }
@@ -969,12 +969,12 @@ zstdgpu_Status zstdgpu_SubmitWithExternalMemory(zstdgpu_PerRequestContext req,
             zstdgpu_SubmitStage2(req, cmdList);
         }
 
-        return kzstdgpu_StatusSuccess;
+        return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
-    return kzstdgpu_StatusInvalidArgument;
+    return ZSTDGPU_ENUM_CONST(StatusInvalidArgument);
 }
 
-zstdgpu_Status zstdgpu_SubmitWithInteralMemory(zstdgpu_PerRequestContext req, uint32_t stageIndex, struct ID3D12GraphicsCommandList *cmdList)
+ZSTDGPU_ENUM(Status) zstdgpu_SubmitWithInteralMemory(zstdgpu_PerRequestContext req, uint32_t stageIndex, struct ID3D12GraphicsCommandList *cmdList)
 {
     uint32_t proceed = 1;
     uint32_t stageCount = zstdgpu_GetStageCountFromSetupInputsType(req->setupInputsType);
@@ -995,7 +995,7 @@ zstdgpu_Status zstdgpu_SubmitWithInteralMemory(zstdgpu_PerRequestContext req, ui
         // NOTE(pamartis): Recompute memory information for a given stage
         if (stageIndex == 0)
         {
-            zstdgpu_ResourceInfo_Stage_0_Init(&req->resInfo, req->zstdFrameCount, req->zstdCompressedFramesByteCount, kzstdgpu_SetupInputsType_Frames_GpuMemory == req->setupInputsType ? 1u : 0u);
+            zstdgpu_ResourceInfo_Stage_0_Init(&req->resInfo, req->zstdFrameCount, req->zstdCompressedFramesByteCount, ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_GpuMemory) == req->setupInputsType ? 1u : 0u);
         }
         else if (stageIndex == 1)
         {
@@ -1035,7 +1035,7 @@ zstdgpu_Status zstdgpu_SubmitWithInteralMemory(zstdgpu_PerRequestContext req, ui
         // NOTE(pamartis): try re-creating heap and then resources (will trigger only if they were released or never created)
         zstdgpu_ResourceDataGpu_InitHeap(&req->resData, &req->resInfo, req->device, stageIndex);
         zstdgpu_ResourceDataGpu_Init(&req->resData, &req->resInfo, req->device, stageIndex);
-        if (kzstdgpu_SetupInputsType_Frames_GpuMemory == req->setupInputsType && stageIndex == 0u)
+        if (ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_GpuMemory) == req->setupInputsType && stageIndex == 0u)
         {
             zstdgpu_ResourceDataGpu_ReInitInputExternal(&req->resData, req->compressedFramesData, req->compressedFramesRefs);
         }
@@ -1048,7 +1048,7 @@ zstdgpu_Status zstdgpu_SubmitWithInteralMemory(zstdgpu_PerRequestContext req, ui
         // NOTE(pamartis): we need to do call upload callback right after initialising resources of stage == 0
         if (stageIndex == 0)
         {
-            if (kzstdgpu_SetupInputsType_Frames_CpuMemory == req->setupInputsType)
+            if (ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_CpuMemory) == req->setupInputsType)
             {
                 req->uploadCallback(req->resData.cpu2Gpu.CompressedDataCpu, req->zstdCompressedFramesByteCount, req->resData.cpu2Gpu.FramesRefsCpu, req->zstdFrameCount, req->uploadUserdata);
             }
@@ -1076,9 +1076,9 @@ zstdgpu_Status zstdgpu_SubmitWithInteralMemory(zstdgpu_PerRequestContext req, ui
             zstdgpu_SubmitStage2(req, cmdList);
         }
 
-        return kzstdgpu_StatusSuccess;
+        return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
-    return kzstdgpu_StatusInvalidArgument;
+    return ZSTDGPU_ENUM_CONST(StatusInvalidArgument);
 }
 
 #define setResourceState(barriers, index, resource, stateNameBefore, stateNameAfter)    \
@@ -1197,7 +1197,7 @@ void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
 
         #define zstdgpu_PushUpload(name) cmdList->CopyResource(req->resData.gpuOnly.name, req->resData.cpu2Gpu.name)
 
-        if (kzstdgpu_SetupInputsType_Frames_CpuMemory == req->setupInputsType)
+        if (ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_CpuMemory) == req->setupInputsType)
         {
             zstdgpu_PushUpload(CompressedData);
             zstdgpu_PushUpload(FramesRefs);
@@ -1207,7 +1207,7 @@ void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
 
         setResourceState(barriers, 0, req->resData.gpuOnly.FseProbsDefault, COPY_DEST, NON_PIXEL_SHADER_RESOURCE);
         uploadBarrierCount += 1;
-        if (kzstdgpu_SetupInputsType_Frames_CpuMemory == req->setupInputsType)
+        if (ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_CpuMemory) == req->setupInputsType)
         {
             setResourceState(barriers, 1, req->resData.gpuOnly.CompressedData, COPY_DEST, NON_PIXEL_SHADER_RESOURCE);
             setResourceState(barriers, 2, req->resData.gpuOnly.FramesRefs, COPY_DEST, NON_PIXEL_SHADER_RESOURCE);

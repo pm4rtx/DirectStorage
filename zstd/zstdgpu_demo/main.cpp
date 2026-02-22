@@ -225,7 +225,7 @@ static void zstdgpu_Init_FinaliseSequenceOffsets_SRT(zstdgpu_FinaliseSequenceOff
 #define STRINGIZE(x) STRINGIZE2(x)
 #define STRINGIZE2(x) #x
 #define VALIDATE(name) \
-    if (kzstdgpu_Validate_Success != zstdgpu_ReferenceStore_Validate_##name) \
+    if (ZSTDGPU_ENUM_CONST(Validate_Success) != zstdgpu_ReferenceStore_Validate_##name) \
         debugPrint(L"Validation of "#name" failed in function: " __FUNCTION__ ", file: " __FILE__ ", line: " STRINGIZE(__LINE__) "\n")
 
 static void zstdgpu_Test_DecompressHuffmanWeights(zstdgpu_ResourceDataCpu & cpuRes, zstdgpu_ResourceDataCpu & gpuReadbackRes, uint32_t zstdDataBufferSize, bool chkGpu, bool simGpu)
@@ -1044,16 +1044,16 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
     zstdgpu_PersistentContext persistentContext = NULL;
     {
         const uint32_t persistentMemorySize = zstdgpu_GetPersistentContextRequiredMemorySizeInBytes();
-        zstdgpu_Status status = zstdgpu_CreatePersistentContext(&persistentContext, device, malloc(persistentMemorySize), persistentMemorySize);
-        ZSTDGPU_ASSERT(kzstdgpu_StatusSuccess == status);
+        ZSTDGPU_ENUM(Status) status = zstdgpu_CreatePersistentContext(&persistentContext, device, malloc(persistentMemorySize), persistentMemorySize);
+        ZSTDGPU_ASSERT(ZSTDGPU_ENUM_CONST(StatusSuccess) == status);
     }
 
     debugPrint(L"Initializing 'zstdgpu' PerRequest Context.\n");
     zstdgpu_PerRequestContext perRequestContext = NULL;
     {
         const uint32_t perRequestMemorySize = zstdgpu_GetPerRequestContextRequiredMemorySizeInBytes();
-        zstdgpu_Status status = zstdgpu_CreatePerRequestContext(&perRequestContext, persistentContext, malloc(perRequestMemorySize), perRequestMemorySize);
-        ZSTDGPU_ASSERT(kzstdgpu_StatusSuccess == status);
+        ZSTDGPU_ENUM(Status) status = zstdgpu_CreatePerRequestContext(&perRequestContext, persistentContext, malloc(perRequestMemorySize), perRequestMemorySize);
+        ZSTDGPU_ASSERT(ZSTDGPU_ENUM_CONST(StatusSuccess) == status);
     }
 
     uint32_t stageCount = 0;
@@ -1387,15 +1387,15 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
     d3d12aid_CmdQueue_CpuWaitForGpuIdle(&cmdQueue);
     {
         void *memory = NULL;
-        zstdgpu_Status status = zstdgpu_DestroyPerRequestContext(&memory, NULL, perRequestContext);
-        ZSTDGPU_ASSERT(kzstdgpu_StatusSuccess == status);
+        ZSTDGPU_ENUM(Status) status = zstdgpu_DestroyPerRequestContext(&memory, NULL, perRequestContext);
+        ZSTDGPU_ASSERT(ZSTDGPU_ENUM_CONST(StatusSuccess) == status);
         free(memory);
     }
 
     {
         void *memory = NULL;
-        zstdgpu_Status status = zstdgpu_DestroyPersistentContext(&memory, NULL, persistentContext);
-        ZSTDGPU_ASSERT(kzstdgpu_StatusSuccess == status);
+        ZSTDGPU_ENUM(Status) status = zstdgpu_DestroyPersistentContext(&memory, NULL, persistentContext);
+        ZSTDGPU_ASSERT(ZSTDGPU_ENUM_CONST(StatusSuccess) == status);
         free(memory);
     }
 
