@@ -3080,39 +3080,35 @@ void zstdgpu_DecompressHuffmanCompressedLiterals(ZSTDGPU_RO_RAW_BUFFER(uint32_t)
 
         zstdgpu_LitStreamInfo compressedLiteral = LitRefs[literalStreamId];
 
-#if 0
-        zstdgpu_Backward_BitBuffer_V0 bitBuffer;
-        zstdgpu_Backward_BitBuffer_V0_InitWithSegment(bitBuffer, CompressedData, compressedLiteral.src);
-
-        uint32_t state = zstdgpu_Backward_BitBuffer_V0_Get_Huffman(bitBuffer, bitsMax, bitsMax);
-        uint32_t decodedByteCnt = 0;
-        while (decodedByteCnt < compressedLiteral.dst.size)
+        if (compressedLiteral.dst.size != 0) // derived from block Regenerated_Size
         {
-            uint32_t symbol = 0;
-            uint32_t bitcnt = 0;
-            zstdgpu_SampleHuffmanSymbolAndBitcnt(symbol, bitcnt, state, GS_HuffmanTable);
+            uint32_t decodedByteCnt = 0;
+#if 0
+            zstdgpu_Backward_BitBuffer_V0 bitBuffer;
+            zstdgpu_Backward_BitBuffer_V0_InitWithSegment(bitBuffer, CompressedData, compressedLiteral.src);
 
-            // FIXME/TODO(pamartis): Experiment with storing data to LDS first (we have some allocated but unused)
-            // and then to memory. At least try small LDS cache of 32-dwords per literal
-            zstdgpu_TypedStoreU8(DecompressedLiterals, compressedLiteral.dst.offs + decodedByteCnt++, symbol);
-
-            if (zstdgpu_Backward_BitBuffer_V0_CanRefill_Huffman(bitBuffer, bitcnt))
+            uint32_t state = zstdgpu_Backward_BitBuffer_V0_Get_Huffman(bitBuffer, bitsMax, bitsMax);
+            for (;;)
             {
+                uint32_t symbol = 0;
+                uint32_t bitcnt = 0;
+                zstdgpu_SampleHuffmanSymbolAndBitcnt(symbol, bitcnt, state, GS_HuffmanTable);
+
+                // FIXME/TODO(pamartis): Experiment with storing data to LDS first (we have some allocated but unused)
+                // and then to memory. At least try small LDS cache of 32-dwords per literal
+                zstdgpu_TypedStoreU8(DecompressedLiterals, compressedLiteral.dst.offs + decodedByteCnt++, symbol);
+
+                if (decodedByteCnt == compressedLiteral.dst.size)
+                {
+                    break;
+                }
+
                 const uint32_t rest = zstdgpu_Backward_BitBuffer_V0_Get_Huffman(bitBuffer, bitcnt, bitsMax);
                 state = ((state << bitcnt) + rest) & maxBitcntMask;
             }
-            else
-            {
-                break;
-            }
-        }
 #else
-        if (compressedLiteral.dst.size != 0) // derived from block Regenerated_Size
-        {
             zstdgpu_HuffmanStream stream;
             zstdgpu_HuffmanStream_InitWithSegment(stream, CompressedData, compressedLiteral.src, bitsMax);
-
-            uint32_t decodedByteCnt = 0;
             do
             {
                 const uint32_t state = zstdgpu_HuffmanStream_RefillAndPeek(stream);
@@ -3126,8 +3122,8 @@ void zstdgpu_DecompressHuffmanCompressedLiterals(ZSTDGPU_RO_RAW_BUFFER(uint32_t)
                 // It could make sense to mid-break on (decodedByteCnt == compressedLiteral.dst.size) instead.
                 zstdgpu_HuffmanStream_Consume(stream, bitcnt);
             } while (decodedByteCnt < compressedLiteral.dst.size);
-        }
 #endif
+        }
     }
 }
 
@@ -3722,39 +3718,30 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_IN
 
     const zstdgpu_SeqStreamInfo seqRef = srt.inSeqRefs[seqStreamIdx];
 
-    #ifdef ZSTDGPU_BACKWARD_BITBUF
-    #   error `ZSTDGPU_BACKWARD_BITBUF` must not be defined.
-    #endif
-
-    zstdgpu_Backward_BitBuffer_V0 bitBuffer;
-    #define ZSTDGPU_BACKWARD_BITBUF(method) zstdgpu_Backward_BitBuffer_V0_##method
-    ZSTDGPU_BACKWARD_BITBUF(InitWithSegment)(bitBuffer, srt.inCompressedData, seqRef.src);
-
-#ifndef __hlsl_dx_compiler
-
-    const uint32_t SEQ_LITERAL_LENGTH_BASELINES[36] = {
-        0,  1,  2,   3,   4,   5,    6,    7,    8,    9,     10,    11,
-        12, 13, 14,  15,  16,  18,   20,   22,   24,   28,    32,    40,
-        48, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536};
-    const uint32_t SEQ_LITERAL_LENGTH_EXTRA_BITS[36] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  1,  1,
-        1, 1, 2, 2, 3, 3, 4, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-
-    const uint32_t SEQ_MATCH_LENGTH_BASELINES[53] = {
-        3,  4,   5,   6,   7,    8,    9,    10,   11,    12,    13,   14, 15, 16,
-        17, 18,  19,  20,  21,   22,   23,   24,   25,    26,    27,   28, 29, 30,
-        31, 32,  33,  34,  35,   37,   39,   41,   43,    47,    51,   59, 67, 83,
-        99, 131, 259, 515, 1027, 2051, 4099, 8195, 16387, 32771, 65539 };
-
-    const uint32_t SEQ_MATCH_LENGTH_EXTRA_BITS[53] = {
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  0,  0,  0, 0,
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,  0,  0,  0,  1,  1,  1, 1,
-        2, 2, 3, 3, 4, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16};
-#endif
+    // Extra bits are low 5 bits, rest are baseline.
+    // It could be better/simpler to not bitpack (use uint32_t2), but the LLVM-SROA pass in DXC might split that up; a single load is desired.
+    static const uint32_t SEQ_LITERAL_LENGTH_EXTRA_BITS_AND_BASELINES[36] =
+    {
+            0 << 5 |  0,     1 << 5 |  0,     2 << 5 |  0,     3 << 5 |  0,     4 << 5 |  0,     5 << 5 |  0,     6 << 5 |  0,     7 << 5 |  0,
+            8 << 5 |  0,     9 << 5 |  0,    10 << 5 |  0,    11 << 5 |  0,    12 << 5 |  0,    13 << 5 |  0,    14 << 5 |  0,    15 << 5 |  0,
+           16 << 5 |  1,    18 << 5 |  1,    20 << 5 |  1,    22 << 5 |  1,    24 << 5 |  2,    28 << 5 |  2,    32 << 5 |  3,    40 << 5 |  3,
+           48 << 5 |  4,    64 << 5 |  6,   128 << 5 |  7,   256 << 5 |  8,   512 << 5 |  9,  1024 << 5 | 10,  2048 << 5 | 11,  4096 << 5 | 12,
+         8192 << 5 | 13, 16384 << 5 | 14, 32768 << 5 | 15, 65536 << 5 | 16
+    };
+    static const uint32_t SEQ_MATCH_LENGTH_EXTRA_BITS_AND_BASELINES[53] =
+    {
+            3 << 5 |  0,     4 << 5 |  0,     5 << 5 |  0,     6 << 5 |  0,     7 << 5 |  0,     8 << 5 |  0,     9 << 5 |  0,    10 << 5 |  0,
+           11 << 5 |  0,    12 << 5 |  0,    13 << 5 |  0,    14 << 5 |  0,    15 << 5 |  0,    16 << 5 |  0,    17 << 5 |  0,    18 << 5 |  0,
+           19 << 5 |  0,    20 << 5 |  0,    21 << 5 |  0,    22 << 5 |  0,    23 << 5 |  0,    24 << 5 |  0,    25 << 5 |  0,    26 << 5 |  0,
+           27 << 5 |  0,    28 << 5 |  0,    29 << 5 |  0,    30 << 5 |  0,    31 << 5 |  0,    32 << 5 |  0,    33 << 5 |  0,    34 << 5 |  0,
+           35 << 5 |  1,    37 << 5 |  1,    39 << 5 |  1,    41 << 5 |  1,    43 << 5 |  2,    47 << 5 |  2,    51 << 5 |  3,    59 << 5 |  3,
+           67 << 5 |  4,    83 << 5 |  4,    99 << 5 |  5,   131 << 5 |  7,   259 << 5 |  8,   515 << 5 |  9,  1027 << 5 | 10,  2051 << 5 | 11,
+         4099 << 5 | 12,  8195 << 5 | 13, 16387 << 5 | 14, 32771 << 5 | 15, 65539 << 5 | 16
+    };
 
     // NOTE: the final block size will be computed as SUM(literalSize, totalMLen)
     const uint32_t literalSize = srt.inoutBlockSizePrefix[seqRef.blockId];
-    uint32_t totalSize = 0;
+    // uint32_t totalSize = 0;
     uint32_t totalMLen = 0;
 
     uint32_t offset1, offset2, offset3;
@@ -3765,8 +3752,6 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_IN
     const uint32_t startMLen = seqRef.fseMLen * kzstdgpu_FseElemMaxCount_LLen;
 
     const zstdgpu_OffsetAndSize dst = zstdgpu_GetSequenceStartAndCount(srt, seqStreamIdx, seqStreamCnt);
-    const uint32_t outputStart = dst.offs;
-    const uint32_t outputEnd = outputStart + dst.size;
 
     #include "zstdgpu_lds_decl_base.h"
     ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_FSE_CACHE_LDS(0, DecompressSequences_LdsFseCache);
@@ -3797,114 +3782,127 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_IN
     ZSTDGPU_PRELOAD_FSE_INTO_LDS(MLen)
 
     #if !defined(__XBOX_SCARLETT)
-    if (tgSize > WaveGetLaneCount())
-    {
-        GroupMemoryBarrierWithGroupSync();
-    }
-    if (threadId >= WaveGetLaneCount())
+    GroupMemoryBarrierWithGroupSync();
+    #endif
+
+    // The rest of the shader should be scalar. Ideally the compiler should emit mostly scalar instructions,
+    // but this may help it, or deactivate unnecessary lanes for instructions with no scalar counterpart (LDS loads).
+    if (threadId != 0)
     {
         return;
     }
-    #endif
 
-    #define ZSTDGPU_INIT_FSE_STATE(name)                                                                    \
-        uint32_t state##name = 0;                                                                           \
-        if (seqRef.fse##name < kzstdgpu_FseProbTableIndex_MinRLE)                                           \
-        {                                                                                                   \
-            const uint32_t initBitcnt = srt.inFseInfos[seqRef.fse##name].fseProbCountAndAccuracyLog2 >> 8;  \
-            state##name = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, initBitcnt);                              \
-        }
-
-    ZSTDGPU_INIT_FSE_STATE(LLen)
-    ZSTDGPU_INIT_FSE_STATE(Offs)
-    ZSTDGPU_INIT_FSE_STATE(MLen)
-    #undef ZSTDGPU_INIT_FSE_STATE
-
-    #define ZSTGPU_DECODE_SEQ(outIdx, outNState, outRestBitcnt)                             \
-    {                                                                                       \
-        const uint32_t packedFseElemLLen = WaveReadLaneFirst(zstdgpu_LdsLoadU32(GS_FsePackedLLen + stateLLen));\
-        const uint32_t packedFseElemOffs = WaveReadLaneFirst(zstdgpu_LdsLoadU32(GS_FsePackedOffs + stateOffs));\
-        const uint32_t packedFseElemMLen = WaveReadLaneFirst(zstdgpu_LdsLoadU32(GS_FsePackedMLen + stateMLen));\
-                                                                                            \
-        const uint32_t symbolLLen = packedFseElemLLen & 0xff;                               \
-        const uint32_t symbolOffs = packedFseElemOffs & 0xff;                               \
-        const uint32_t symbolMLen = packedFseElemMLen & 0xff;                               \
-                                                                                            \
-        outRestBitcnt##LLen = (packedFseElemLLen >> 8) & 0xff;                              \
-        outRestBitcnt##Offs = (packedFseElemOffs >> 8) & 0xff;                              \
-        outRestBitcnt##MLen = (packedFseElemMLen >> 8) & 0xff;                              \
-                                                                                            \
-        outNState##LLen = (packedFseElemLLen >> 16) & 0xffff;                               \
-        outNState##Offs = (packedFseElemOffs >> 16) & 0xffff;                               \
-        outNState##MLen = (packedFseElemMLen >> 16) & 0xffff;                               \
-                                                                                            \
-        ZSTDGPU_ASSERT(symbolLLen < 36);                                                    \
-        ZSTDGPU_ASSERT(symbolMLen < 53);                                                    \
-                                                                                            \
-        const uint32_t bitcntLLen = SEQ_LITERAL_LENGTH_EXTRA_BITS[symbolLLen];              \
-        const uint32_t bitcntOffs = symbolOffs;                                             \
-        const uint32_t bitcntMLen = SEQ_MATCH_LENGTH_EXTRA_BITS[symbolMLen];                \
-                                                                                            \
-        const uint32_t bitsOffs = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, bitcntOffs);      \
-        const uint32_t bitsMLen = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, bitcntMLen);      \
-        const uint32_t bitsLLen = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, bitcntLLen);      \
-                                                                                            \
-              uint32_t offs = (1u << symbolOffs) + bitsOffs;                                \
-        const uint32_t mlen = SEQ_MATCH_LENGTH_BASELINES[symbolMLen] + bitsMLen;            \
-        const uint32_t llen = SEQ_LITERAL_LENGTH_BASELINES[symbolLLen] + bitsLLen;          \
-                                                                                            \
-        offs = zstdgpu_SequenceOffsets_Update2(offset1, offset2, offset3, offs, llen);      \
-                                                                                            \
-        totalSize += llen + mlen;                                                           \
-        totalMLen += mlen;                                                                  \
-                                                                                            \
-        srt.inoutDecompressedSequenceLLen[outIdx] = llen;                                   \
-        srt.inoutDecompressedSequenceMLen[outIdx] = mlen;                                   \
-        srt.inoutDecompressedSequenceOffs[outIdx] = offs;                                   \
-    }
-
-
-    for (uint32_t i = outputStart; i < outputEnd - 1; ++i)
+    if (dst.size != 0)
     {
-        uint32_t restbitcntLLen, restbitcntOffs, restbitcntMLen;
-        uint32_t nstateLLen, nstateOffs, nstateMLen;
-        ZSTGPU_DECODE_SEQ(i, nstate, restbitcnt)
-
-        #if 0
-        const uint32_t restLLen = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, restbitcntLLen);
-        const uint32_t restMLen = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, restbitcntMLen);
-        const uint32_t restOffs = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, restbitcntOffs);
-        #else
-        // NOTE(pamartis): bit counts stored in FSE tables are equal to accuracy_log in worst case
-        // so it's 9 for LLen/MLen and 8 for offset, so we are not extracting more than 26 bits at once
-        uint32_t packedBits = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, restbitcntLLen + restbitcntMLen + restbitcntOffs);
-
-        const uint32_t restOffs = packedBits & ((1u << restbitcntOffs) - 1u);
-        packedBits >>= restbitcntOffs;
-
-        const uint32_t restMLen = packedBits & ((1u << restbitcntMLen) - 1u);
-        packedBits >>= restbitcntMLen;
-
-        const uint32_t restLLen = packedBits;
+        #ifdef ZSTDGPU_BACKWARD_BITBUF
+        #   error `ZSTDGPU_BACKWARD_BITBUF` must not be defined.
         #endif
 
-        stateLLen = nstateLLen + restLLen;
-        stateMLen = nstateMLen + restMLen;
-        stateOffs = nstateOffs + restOffs;
-    }
+        zstdgpu_Backward_BitBuffer_V0 bitBuffer;
+        #define ZSTDGPU_BACKWARD_BITBUF(method) zstdgpu_Backward_BitBuffer_V0_##method
+        ZSTDGPU_BACKWARD_BITBUF(InitWithSegment)(bitBuffer, srt.inCompressedData, seqRef.src);
 
-    uint32_t restbitcntLLen, restbitcntOffs, restbitcntMLen;
-    uint32_t nstateLLen, nstateOffs, nstateMLen;
-    ZSTGPU_DECODE_SEQ(outputEnd - 1, nstate, restbitcnt)
-    #undef ZSTDGPU_BACKWARD_BITBUF
+        #define ZSTDGPU_INIT_FSE_STATE(name)                                                                    \
+            uint32_t state##name = 0;                                                                           \
+            if (seqRef.fse##name < kzstdgpu_FseProbTableIndex_MinRLE)                                           \
+            {                                                                                                   \
+                const uint32_t initBitcnt = srt.inFseInfos[seqRef.fse##name].fseProbCountAndAccuracyLog2 >> 8;  \
+                state##name = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, initBitcnt);                              \
+            }
+
+        ZSTDGPU_INIT_FSE_STATE(LLen)
+        ZSTDGPU_INIT_FSE_STATE(Offs)
+        ZSTDGPU_INIT_FSE_STATE(MLen)
+        #undef ZSTDGPU_INIT_FSE_STATE
+
+        #define ZSTGPU_DECODE_SEQ(outIdx, outNState, outRestBitcnt)                             \
+        {                                                                                       \
+            const uint32_t packedFseElemLLen = WaveReadLaneFirst(zstdgpu_LdsLoadU32(GS_FsePackedLLen + stateLLen));\
+            const uint32_t packedFseElemOffs = WaveReadLaneFirst(zstdgpu_LdsLoadU32(GS_FsePackedOffs + stateOffs));\
+            const uint32_t packedFseElemMLen = WaveReadLaneFirst(zstdgpu_LdsLoadU32(GS_FsePackedMLen + stateMLen));\
+                                                                                                \
+            const uint32_t symbolLLen = packedFseElemLLen & 0xff;                               \
+            const uint32_t symbolOffs = packedFseElemOffs & 0xff;                               \
+            const uint32_t symbolMLen = packedFseElemMLen & 0xff;                               \
+                                                                                                \
+            outRestBitcnt##LLen = (packedFseElemLLen >> 8) & 0xff;                              \
+            outRestBitcnt##Offs = (packedFseElemOffs >> 8) & 0xff;                              \
+            outRestBitcnt##MLen = (packedFseElemMLen >> 8) & 0xff;                              \
+                                                                                                \
+            outNState##LLen = (packedFseElemLLen >> 16) & 0xffff;                               \
+            outNState##Offs = (packedFseElemOffs >> 16) & 0xffff;                               \
+            outNState##MLen = (packedFseElemMLen >> 16) & 0xffff;                               \
+                                                                                                \
+            ZSTDGPU_ASSERT(symbolLLen < 36);                                                    \
+            ZSTDGPU_ASSERT(symbolMLen < 53);                                                    \
+                                                                                                \
+            const uint32_t literalLengthInfo = SEQ_LITERAL_LENGTH_EXTRA_BITS_AND_BASELINES[symbolLLen]; \
+            const uint32_t matchLengthInfo = SEQ_MATCH_LENGTH_EXTRA_BITS_AND_BASELINES[symbolMLen];     \
+            const uint32_t bitcntLLen = literalLengthInfo & 31;                                 \
+            const uint32_t bitcntOffs = symbolOffs;                                             \
+            const uint32_t bitcntMLen = matchLengthInfo & 31;                                   \
+                                                                                                \
+            const uint32_t bitsOffs = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, bitcntOffs);      \
+            const uint32_t bitsMLen = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, bitcntMLen);      \
+            const uint32_t bitsLLen = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, bitcntLLen);      \
+                                                                                                \
+                  uint32_t offs = (1u << symbolOffs) + bitsOffs;                                \
+            const uint32_t mlen = (matchLengthInfo >> 5) + bitsMLen;                            \
+            const uint32_t llen = (literalLengthInfo >> 5) + bitsLLen;                          \
+                                                                                                \
+            offs = zstdgpu_SequenceOffsets_Update2(offset1, offset2, offset3, offs, llen);      \
+                                                                                                \
+            /*totalSize += llen + mlen;*/                                                           \
+            totalMLen += mlen;                                                                  \
+                                                                                                \
+            srt.inoutDecompressedSequenceLLen[outIdx] = llen;                                   \
+            srt.inoutDecompressedSequenceMLen[outIdx] = mlen;                                   \
+            srt.inoutDecompressedSequenceOffs[outIdx] = offs;                                   \
+        }
+
+              uint32_t i         = dst.offs;
+        const uint32_t outputEnd = dst.offs + dst.size;
+        for (;;)
+        {
+            uint32_t restbitcntLLen, restbitcntOffs, restbitcntMLen;
+            uint32_t nstateLLen, nstateOffs, nstateMLen;
+            ZSTGPU_DECODE_SEQ(i, nstate, restbitcnt)
+            if (++i == outputEnd)
+            {
+                break;
+            }
+
+            #if 0
+            const uint32_t restLLen = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, restbitcntLLen);
+            const uint32_t restMLen = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, restbitcntMLen);
+            const uint32_t restOffs = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, restbitcntOffs);
+            #else
+            // NOTE(pamartis): bit counts stored in FSE tables are equal to accuracy_log in worst case
+            // so it's 9 for LLen/MLen and 8 for offset, so we are not extracting more than 26 bits at once
+            uint32_t packedBits = ZSTDGPU_BACKWARD_BITBUF(Get)(bitBuffer, restbitcntLLen + restbitcntMLen + restbitcntOffs);
+
+            const uint32_t restOffs = packedBits & ((1u << restbitcntOffs) - 1u);
+            packedBits >>= restbitcntOffs;
+
+            const uint32_t restMLen = packedBits & ((1u << restbitcntMLen) - 1u);
+            packedBits >>= restbitcntMLen;
+
+            const uint32_t restLLen = packedBits;
+            #endif
+
+            stateLLen = nstateLLen + restLLen;
+            stateMLen = nstateMLen + restMLen;
+            stateOffs = nstateOffs + restOffs;
+        }
+        ZSTDGPU_ASSERT(bitBuffer.hadlastrefill && bitBuffer.bitcnt == 0);
+        #undef ZSTDGPU_BACKWARD_BITBUF
+    }
 
     // NOTE(pamartis): update block size adding `totalMLen` bytes on top
     srt.inoutBlockSizePrefix[seqRef.blockId] = totalMLen + literalSize;
     srt.inoutPerSeqStreamFinalOffset1[seqStreamIdx] = offset1;
     srt.inoutPerSeqStreamFinalOffset2[seqStreamIdx] = offset2;
     srt.inoutPerSeqStreamFinalOffset3[seqStreamIdx] = offset3;
-
-    ZSTDGPU_ASSERT(bitBuffer.hadlastrefill && bitBuffer.bitcnt == 0);
 }
 
 // LDS partitioning macro lists for sequence decompression with in-LDS caching
