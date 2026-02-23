@@ -45,6 +45,8 @@
 struct Consts
 {
     uint32_t tableStartIndex;
+    uint32_t tableDataStart;
+    uint32_t tableDataCount;
 };
 
 ConstantBuffer<Consts> Constants : register(b0);
@@ -62,7 +64,7 @@ groupshared uint32_t Lds[kzstdgpu_InitFseTable_Experimental_LdsSize];
 #define ZSTDGPU_LDS Lds
 #include "../zstdgpu_lds_hlsl.h"
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors = 2), UAV(u0, numDescriptors=3)), RootConstants(b0, num32BitConstants=1)")]
+[RootSignature("DescriptorTable(SRV(t0, numDescriptors = 2), UAV(u0, numDescriptors=3)), RootConstants(b0, num32BitConstants=3)")]
 [numthreads(kzstdgpu_TgSizeX_InitFseTable, 1, 1)]
 void main(uint32_t groupId : SV_GroupId, uint32_t i : SV_GroupThreadId)
 {
@@ -72,5 +74,7 @@ void main(uint32_t groupId : SV_GroupId, uint32_t i : SV_GroupThreadId)
     ZSTDGPU_INIT_FSE_TABLE_SRT()
     #include "../zstdgpu_srt_decl_undef.h"
     srt.tableStartIndex = Constants.tableStartIndex;
+    srt.tableDataStart  = Constants.tableDataStart;
+    srt.tableDataCount  = Constants.tableDataCount;
     zstdgpu_ShaderEntry_InitFseTable(srt, groupId, i);
 }

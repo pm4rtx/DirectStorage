@@ -294,9 +294,11 @@ static void zstdgpu_ResourceInfo_Stage_1_InitSize(zstdgpu_ResourceInfo *outInfo,
     const uint32_t PerSeqStreamFinalOffset3_Count = PerSeqStreamFinalOffset1_Count;
     const uint32_t PerSeqStreamSeqStart_Count = cmpBlockCount;
 
-    const uint32_t FseTable_Count = cmpBlockCount * 4 + 3; // 4 FSE tables per compressed block (Huff, LLen, Offs, MLen) + 3 default tables for (LLen, Offs, MLen)
-    const uint32_t FseProbs_Count = FseTable_Count * kzstdgpu_MaxCount_FseProbs;
-    const uint32_t FseTableElem_Count = FseTable_Count * kzstdgpu_FseElemMaxCount_LLen;
+    const uint32_t SeqFseElemMaxCount = kzstdgpu_FseElemMaxCount_LLen + kzstdgpu_FseElemMaxCount_Offs + kzstdgpu_FseElemMaxCount_MLen;
+    const uint32_t NonRLE_FseTableCount = cmpBlockCount * 4 + 3; // 4 FSE tables per compressed block (Huff, LLen, Offs, MLen) + 3 default tables for (LLen, Offs, MLen);
+    const uint32_t FseTable_Count = kzstdgpu_FseRleTableCount + NonRLE_FseTableCount;
+    const uint32_t FseProbs_Count = NonRLE_FseTableCount * kzstdgpu_MaxCount_FseProbs;
+    const uint32_t FseTableElem_Count = kzstdgpu_FseRleTableCount + cmpBlockCount * (kzstdgpu_FseElemMaxCount_HufW + SeqFseElemMaxCount) + SeqFseElemMaxCount;
 
     const uint32_t FseSymbols_Count = FseTableElem_Count;
     const uint32_t FseBitcnts_Count = FseTableElem_Count;

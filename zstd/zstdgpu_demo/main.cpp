@@ -570,23 +570,31 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
         zstdgpu_Init_InitFseTable_SRT(srt, zstdCpu);
 
         srt.tableStartIndex = 0;
+        srt.tableDataStart  = zstdgpu_ComputeFseDataStartHufW(0, zstdCmpBlockCount);
+        srt.tableDataCount  = kzstdgpu_FseElemMaxCount_HufW;
         for (uint32_t i = 0; i < CNTRS(FseHufW); ++i)
         {
             zstdgpu_ShaderEntry_InitFseTable(srt, i, 0);
         }
 
         srt.tableStartIndex += zstdCmpBlockCount;
+        srt.tableDataStart  = zstdgpu_ComputeFseDataStartLLen(0, zstdCmpBlockCount);
+        srt.tableDataCount  = kzstdgpu_FseElemMaxCount_LLen;
         for (uint32_t i = 0; i < CNTRS(FseLLen); ++i)
         {
             zstdgpu_ShaderEntry_InitFseTable(srt, i, 0);
         }
 
         srt.tableStartIndex += zstdCmpBlockCount + 1;
+        srt.tableDataStart  = zstdgpu_ComputeFseDataStartOffs(0, zstdCmpBlockCount);
+        srt.tableDataCount  = kzstdgpu_FseElemMaxCount_Offs;
         for (uint32_t i = 0; i < CNTRS(FseOffs); ++i)
         {
             zstdgpu_ShaderEntry_InitFseTable(srt, i, 0);
         }
         srt.tableStartIndex += zstdCmpBlockCount + 1;
+        srt.tableDataStart  = zstdgpu_ComputeFseDataStartMLen(0, zstdCmpBlockCount);
+        srt.tableDataCount  = kzstdgpu_FseElemMaxCount_MLen;
         for (uint32_t i = 0; i < CNTRS(FseMLen); ++i)
         {
             zstdgpu_ShaderEntry_InitFseTable(srt, i, 0);

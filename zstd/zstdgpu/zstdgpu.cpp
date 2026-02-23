@@ -1601,22 +1601,34 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             ID3D12Resource* argBuf = req->resData.gpuOnly.Counters;
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Huffman Weights");
-            cmdList->SetComputeRoot32BitConstant(1, 0, 0);
+            uint32_t tableStartIndex = 0;
+            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 0);
+            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartHufW(0, req->zstdCmpBlockCount), 1);
+            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_HufW, 2);
             cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_FseHufW * sizeof(uint32_t), NULL, 0);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Literal Lengths");
-            cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 0);
+            tableStartIndex += req->zstdCmpBlockCount;
+            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 0);
+            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartLLen(0, req->zstdCmpBlockCount), 1);
+            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_LLen, 2);
             cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_FseLLen * sizeof(uint32_t), NULL, 0);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Offsets");
-            cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount * 2 + 1, 0);
+            tableStartIndex += req->zstdCmpBlockCount + 1;
+            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 0);
+            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartOffs(0, req->zstdCmpBlockCount), 1);
+            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_Offs, 2);
             cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_FseOffs * sizeof(uint32_t), NULL, 0);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Match Lengths");
-            cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount * 3 + 2, 0);
+            tableStartIndex += req->zstdCmpBlockCount + 1;
+            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 0);
+            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartMLen(0, req->zstdCmpBlockCount), 1);
+            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_MLen, 2);
             cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_FseMLen * sizeof(uint32_t), NULL, 0);
             PIXEndEvent(cmdList);
             PIXEndEvent(cmdList);

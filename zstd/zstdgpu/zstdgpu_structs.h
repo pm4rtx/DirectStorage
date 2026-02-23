@@ -273,14 +273,15 @@ static const uint32_t kzstdgpu_FseDefaultProbAccuracy_LLen = 6;
 static const uint32_t kzstdgpu_FseDefaultProbAccuracy_Offs = 5;
 static const uint32_t kzstdgpu_FseDefaultProbAccuracy_MLen = 6;
 
+// 256 dense RLE entries at the beginning of FSE element buffers (positions 0-255).
+// RLE table with symbol S uses fseTableIndex = S. Real tables start at index 256.
+static const uint32_t kzstdgpu_FseRleTableCount = 256;
+
 // We define some special indices to classify FSE table indices referred by compressed blocks:
 //  "Unused" - special index showing the compressed block doesn't use FSE table
 //  "Repeat" - special index showing the compressed block uses FSE table from previous block that uses some
-//  "MinRLE":"MaxRLE" - a range of special indices showing that that FSE table is defined by a single symbol = `index - kzstdgpu_FseProbTableIndex_MinRLE`
 static const uint32_t kzstdgpu_FseProbTableIndex_Unused = 0x3fffffff;
 static const uint32_t kzstdgpu_FseProbTableIndex_Repeat = kzstdgpu_FseProbTableIndex_Unused - 1;
-static const uint32_t kzstdgpu_FseProbTableIndex_MaxRLE = kzstdgpu_FseProbTableIndex_Repeat - 1;
-static const uint32_t kzstdgpu_FseProbTableIndex_MinRLE = kzstdgpu_FseProbTableIndex_MaxRLE - 256 + 1;
 
 static const uint32_t kzstdgpu_CounterIndex_FseHufW = 0;
 static const uint32_t kzstdgpu_CounterIndex_FseLLen = 3;
@@ -1348,6 +1349,64 @@ static zstdgpu_FseInfo zstdgpu_CreateFseInfo(uint32_t symbolCount, uint32_t accu
     return info;
 }
 
+static uint32_t zstdgpu_ComputeFseIndexHufW(uint32_t indexHufW, uint32_t cmpBlockCount)
+{
+    return kzstdgpu_FseRleTableCount + indexHufW;
+}
+
+static uint32_t zstdgpu_ComputeFseIndexLLen(uint32_t indexLLen, uint32_t cmpBlockCount)
+{
+    return kzstdgpu_FseRleTableCount + cmpBlockCount + indexLLen;
+}
+
+static uint32_t zstdgpu_ComputeFseIndexOffs(uint32_t indexOffs, uint32_t cmpBlockCount)
+{
+    return kzstdgpu_FseRleTableCount + (2 * cmpBlockCount + 1) + indexOffs;
+}
+
+static uint32_t zstdgpu_ComputeFseIndexMLen(uint32_t indexMLen, uint32_t cmpBlockCount)
+{
+    return kzstdgpu_FseRleTableCount + (3 * cmpBlockCount + 2) + indexMLen;
+}
+
+static uint32_t zstdgpu_ComputeFseDataStartHufW(uint32_t indexHufW, uint32_t cmpBlockCount)
+{
+    return kzstdgpu_FseRleTableCount + indexHufW * kzstdgpu_FseElemMaxCount_HufW;
+}
+
+static uint32_t zstdgpu_ComputeFseDataStartLLen(uint32_t indexLLen, uint32_t cmpBlockCount)
+{
+    return kzstdgpu_FseRleTableCount + cmpBlockCount * kzstdgpu_FseElemMaxCount_HufW + indexLLen * kzstdgpu_FseElemMaxCount_LLen;
+}
+
+static uint32_t zstdgpu_ComputeFseDataStartOffs(uint32_t indexOffs, uint32_t cmpBlockCount)
+{
+    return (kzstdgpu_FseRleTableCount + kzstdgpu_FseElemMaxCount_LLen) + cmpBlockCount * (kzstdgpu_FseElemMaxCount_HufW + kzstdgpu_FseElemMaxCount_LLen) + indexOffs * kzstdgpu_FseElemMaxCount_Offs;
+}
+
+static uint32_t zstdgpu_ComputeFseDataStartMLen(uint32_t indexMLen, uint32_t cmpBlockCount)
+{
+    return (kzstdgpu_FseRleTableCount + kzstdgpu_FseElemMaxCount_LLen + kzstdgpu_FseElemMaxCount_Offs) + cmpBlockCount * (kzstdgpu_FseElemMaxCount_HufW + kzstdgpu_FseElemMaxCount_LLen + kzstdgpu_FseElemMaxCount_Offs) + indexMLen * kzstdgpu_FseElemMaxCount_MLen;
+}
+
+static uint32_t zstdgpu_ComputeFseDataStartFromFseIndexLLen(uint32_t fseIndex, uint32_t cmpBlockCount)
+{
+    return (fseIndex < kzstdgpu_FseRleTableCount) ? fseIndex
+                                                  : zstdgpu_ComputeFseDataStartLLen(fseIndex - zstdgpu_ComputeFseIndexLLen(0, cmpBlockCount), cmpBlockCount);
+}
+
+static uint32_t zstdgpu_ComputeFseDataStartFromFseIndexOffs(uint32_t fseIndex, uint32_t cmpBlockCount)
+{
+    return (fseIndex < kzstdgpu_FseRleTableCount) ? fseIndex
+                                                  : zstdgpu_ComputeFseDataStartOffs(fseIndex - zstdgpu_ComputeFseIndexOffs(0, cmpBlockCount), cmpBlockCount);
+}
+
+static uint32_t zstdgpu_ComputeFseDataStartFromFseIndexMLen(uint32_t fseIndex, uint32_t cmpBlockCount)
+{
+    return (fseIndex < kzstdgpu_FseRleTableCount) ? fseIndex
+                                                  : zstdgpu_ComputeFseDataStartMLen(fseIndex - zstdgpu_ComputeFseIndexMLen(0, cmpBlockCount), cmpBlockCount);
+}
+
 typedef struct zstdgpu_CompressedBlockData
 {
     zstdgpu_OffsetAndSize literal;   //< The offset and the size of the uncompressed literal
@@ -1357,10 +1416,10 @@ typedef struct zstdgpu_CompressedBlockData
     uint32_t litStreamIndex;  //< CONSIDER REMOVING: The starting index of Huffman compressed literal streams in `compressedLiteralRefs`
     uint32_t seqStreamIndex;
 
-    uint32_t fseTableIndexHufW; //< Can be an actual index or kzstdgpu_FseProbTableIndex_Unused/Repeat
-    uint32_t fseTableIndexLLen; //< Can be an actual index or kzstdgpu_FseProbTableIndex_Unused/Repeat/MinRLE - MaxRLE
-    uint32_t fseTableIndexOffs; //< Can be an actual index or kzstdgpu_FseProbTableIndex_Unused/Repeat/MinRLE - MaxRLE
-    uint32_t fseTableIndexMLen; //< Can be an actual index or kzstdgpu_FseProbTableIndex_Unused/Repeat/MinRLE - MaxRLE
+    uint32_t fseTableIndexHufW; //< Can be an in range defined by 'zstdgpu_ComputeFseIndexHufW' or kzstdgpu_FseProbTableIndex_Unused/Repeat
+    uint32_t fseTableIndexLLen; //< Can be an in range [0; 255] - meaning RLE, or in range defined by 'zstdgpu_ComputeFseIndexLLen' or kzstdgpu_FseProbTableIndex_Unused/Repeat
+    uint32_t fseTableIndexOffs; //< Can be an in range [0; 255] - meaning RLE, or in range defined by 'zstdgpu_ComputeFseIndexOffs' or kzstdgpu_FseProbTableIndex_Unused/Repeat
+    uint32_t fseTableIndexMLen; //< Can be an in range [0; 255] - meaning RLE, or in range defined by 'zstdgpu_ComputeFseIndexMLen' or kzstdgpu_FseProbTableIndex_Unused/Repeat
 } zstdgpu_CompressedBlockData;
 
 static inline void zstdgpu_Init_CompressedBlockData(ZSTDGPU_PARAM_INOUT(zstdgpu_CompressedBlockData) outBlockData)
@@ -1452,6 +1511,10 @@ static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockC
         if (maxThreads < kzstdgpu_FseDefaultProbCount_MLen)
             maxThreads = kzstdgpu_FseDefaultProbCount_MLen;
 
+        // should be sufficient for RLE FSE table entries
+        if (maxThreads < kzstdgpu_FseRleTableCount)
+            maxThreads = kzstdgpu_FseRleTableCount;
+
         // should be sufficient to initialize PerFrameSeqStreamMinIdx
         if (maxThreads < frameCount)
             maxThreads = frameCount;
@@ -1511,7 +1574,11 @@ static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockC
     ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerFrameBlockSizesRLE         , 15)    \
     ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerFrameSeqStreamMinIdx       , 16)   \
     ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , SeqCountPrefixLookback        , 17)   \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , BlockSeqCountPrefixLookback   , 18)
+    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , BlockSeqCountPrefixLookback   , 18)   \
+    \
+    ZSTDGPU_RW_TYPED_BUFFER_DECL(uint32_t, uint8_t              , FseSymbols                    , 19)   \
+    ZSTDGPU_RW_TYPED_BUFFER_DECL(uint32_t, uint8_t              , FseBitcnts                    , 20)   \
+    ZSTDGPU_RW_TYPED_BUFFER_DECL(uint32_t, uint16_t             , FseNStates                    , 21)
 
 #define ZSTDGPU_PARSE_COMPRESSED_BLOCKS_SRT()                                                           \
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , CompressedData                , 0)    \
@@ -1738,6 +1805,8 @@ typedef struct zstdgpu_InitFseTable_SRT
 {
     ZSTDGPU_INIT_FSE_TABLE_SRT()
     uint32_t    tableStartIndex;
+    uint32_t    tableDataStart;
+    uint32_t    tableDataCount;
 } zstdgpu_InitFseTable_SRT;
 
 typedef struct zstdgpu_DecompressHuffmanWeights_SRT

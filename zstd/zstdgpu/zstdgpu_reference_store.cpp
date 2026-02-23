@@ -21,6 +21,9 @@
 #include "zstdgpu_resources.h"
 
 static const uint8_t *GBase = 0;
+
+typedef uint32_t (*zstdgpu_FseElemOffsetFn)(uint32_t fseTableIndex, uint32_t cmpBlockCount);
+
 static uint32_t GFrameCount = 0;
 
 static uint32_t GBlockCountRAW = 0;
@@ -92,6 +95,15 @@ void zstdgpu_ReferenceStore_AllocateMemory(void)
 
     zstdgpu_ResourceDataCpu_InitZero(&GZstd);
     zstdgpu_ResourceDataCpu_InitFromHeap(&GZstd, &GZstdInfo);
+
+    // Pre-populate 256 dense RLE entries at the beginning of FSE element buffers
+    for (uint32_t i = 0; i < kzstdgpu_FseRleTableCount; ++i)
+    {
+        GZstd.FseSymbols[i] = (uint8_t)i;
+        GZstd.FseBitcnts[i] = 0;
+        GZstd.FseNStates[i] = 0;
+        GZstd.FseInfos[i].fseProbCountAndAccuracyLog2 = 0;
+    }
 }
 
 void zstdgpu_ReferenceStore_FreeMemory(void)
@@ -328,26 +340,29 @@ void zstdgpu_ReferenceStore_Report_FseTable(const int16_t *probs, uint32_t symCo
     free(testBitcnt);
     #endif
 
-#define STORE(name, tableIdx)                                                                                       \
-    if (GFseProbTableTypePending == kzstdgpu_ReferenceStore_Fse##name)                                                    \
-    {                                                                                                               \
-        const uint32_t storeIdx = GBlockCountCMP * tableIdx + GFseProbTableIndex##name++;                           \
-        GZstd.CompressedBlocks[GBlockIndexCMP - 1].fseTableIndex##name = storeIdx;                                  \
-        GLastTableIndex_Fse##name = storeIdx;                                                                       \
-        GZstd.FseInfos[storeIdx] = zstdgpu_CreateFseInfo(symCount, accuracyLog2);                                    \
-        memcpy(&GZstd.FseProbs[storeIdx * kzstdgpu_MaxCount_FseProbs], probs, sizeof(probs[0]) * symCount);            \
-        memcpy(&GZstd.FseSymbols[storeIdx * kzstdgpu_FseElemMaxCount_LLen], symbol, sizeof(symbol[0]) * elemCount);   \
-        memcpy(&GZstd.FseBitcnts[storeIdx * kzstdgpu_FseElemMaxCount_LLen], bitcnt, sizeof(bitcnt[0]) * elemCount);   \
-        memcpy(&GZstd.FseNStates[storeIdx * kzstdgpu_FseElemMaxCount_LLen], nstate, sizeof(nstate[0]) * elemCount);   \
+#define STORE(name, storeExpr)                                                                              \
+    if (GFseProbTableTypePending == kzstdgpu_ReferenceStore_Fse##name)                                      \
+    {                                                                                                       \
+        const uint32_t localIdx = GFseProbTableIndex##name++;                                               \
+        const uint32_t fseIndex = zstdgpu_ComputeFseIndex##name(localIdx, GBlockCountCMP);                  \
+        const uint32_t fseElemStart = zstdgpu_ComputeFseDataStart##name(localIdx, GBlockCountCMP);          \
+        const uint32_t fseProbStart = (fseIndex - kzstdgpu_FseRleTableCount) * kzstdgpu_MaxCount_FseProbs;  \
+        GZstd.CompressedBlocks[GBlockIndexCMP - 1].fseTableIndex##name = storeExpr;                         \
+        GLastTableIndex_Fse##name = storeExpr;                                                              \
+        GZstd.FseInfos[fseIndex] = zstdgpu_CreateFseInfo(symCount, accuracyLog2);                           \
+        memcpy(&GZstd.FseProbs[fseProbStart], probs, sizeof(probs[0]) * symCount);                          \
+        memcpy(&GZstd.FseSymbols[fseElemStart], symbol, sizeof(symbol[0]) * elemCount);                     \
+        memcpy(&GZstd.FseBitcnts[fseElemStart], bitcnt, sizeof(bitcnt[0]) * elemCount);                     \
+        memcpy(&GZstd.FseNStates[fseElemStart], nstate, sizeof(nstate[0]) * elemCount);                     \
     }
 
-    STORE(HufW, 0)
+    STORE(HufW, localIdx)
     else
-    STORE(LLen, 1)
+    STORE(LLen, fseIndex)
     else
-    STORE(Offs, 2)
+    STORE(Offs, fseIndex)
     else
-    STORE(MLen, 3)
+    STORE(MLen, fseIndex)
     else
     {
         __debugbreak();
@@ -360,28 +375,30 @@ void zstdgpu_ReferenceStore_Report_FseDefaultTable(const int16_t *probs, uint32_
     ZSTDGPU_ASSERT(symCount < kzstdgpu_MaxCount_FseProbs);
     const uint32_t elemCount = 1u << accuracyLog2;
 
-#define STORE(name, tableIdx)                                                                                           \
-    if (GFseProbTableTypePending == kzstdgpu_ReferenceStore_Fse##name)                                                        \
-    {                                                                                                                   \
-        const uint32_t storeIdx = GBlockCountCMP * tableIdx + 0;                                                        \
-        GZstd.CompressedBlocks[GBlockIndexCMP - 1].fseTableIndex##name = storeIdx;                                      \
-        GLastTableIndex_Fse##name = storeIdx;                                                                           \
-        if (GFseProbDefaultTable##name##Stored == 0)                                                                    \
-        {                                                                                                               \
-            GZstd.FseInfos[storeIdx] = zstdgpu_CreateFseInfo(symCount, accuracyLog2);                                    \
-            memcpy(&GZstd.FseProbs[storeIdx * kzstdgpu_MaxCount_FseProbs], probs, sizeof(probs[0]) * symCount);            \
-            memcpy(&GZstd.FseSymbols[storeIdx * kzstdgpu_FseElemMaxCount_LLen], symbol, sizeof(symbol[0]) * elemCount);   \
-            memcpy(&GZstd.FseBitcnts[storeIdx * kzstdgpu_FseElemMaxCount_LLen], bitcnt, sizeof(bitcnt[0]) * elemCount);   \
-            memcpy(&GZstd.FseNStates[storeIdx * kzstdgpu_FseElemMaxCount_LLen], nstate, sizeof(nstate[0]) * elemCount);   \
-            GFseProbDefaultTable##name##Stored = 1;                                                                     \
-        }                                                                                                               \
+#define STORE(name)                                                                                         \
+    if (GFseProbTableTypePending == kzstdgpu_ReferenceStore_Fse##name)                                      \
+    {                                                                                                       \
+        const uint32_t fseIndex = zstdgpu_ComputeFseIndex##name(0, GBlockCountCMP);                         \
+        const uint32_t fseElemStart = zstdgpu_ComputeFseDataStart##name(0, GBlockCountCMP);                 \
+        const uint32_t fseProbStart = (fseIndex - kzstdgpu_FseRleTableCount) * kzstdgpu_MaxCount_FseProbs;  \
+        GZstd.CompressedBlocks[GBlockIndexCMP - 1].fseTableIndex##name = fseIndex;                          \
+        GLastTableIndex_Fse##name = fseIndex;                                                               \
+        if (GFseProbDefaultTable##name##Stored == 0)                                                        \
+        {                                                                                                   \
+            GZstd.FseInfos[fseIndex] = zstdgpu_CreateFseInfo(symCount, accuracyLog2);                       \
+            memcpy(&GZstd.FseProbs[fseProbStart], probs, sizeof(probs[0]) * symCount);                      \
+            memcpy(&GZstd.FseSymbols[fseElemStart], symbol, sizeof(symbol[0]) * elemCount);                 \
+            memcpy(&GZstd.FseBitcnts[fseElemStart], bitcnt, sizeof(bitcnt[0]) * elemCount);                 \
+            memcpy(&GZstd.FseNStates[fseElemStart], nstate, sizeof(nstate[0]) * elemCount);                 \
+            GFseProbDefaultTable##name##Stored = 1;                                                         \
+        }                                                                                                   \
     }
 
-    STORE(LLen, 1)
+    STORE(LLen)
     else
-    STORE(Offs, 2)
+    STORE(Offs)
     else
-    STORE(MLen, 3)
+    STORE(MLen)
     else
     {
         __debugbreak();
@@ -393,11 +410,11 @@ void zstdgpu_ReferenceStore_Report_FseProbSymbol(uint32_t symbol)
 {
     ZSTDGPU_ASSERT(symbol < kzstdgpu_MaxCount_FseProbs);
 
-#define STORE(name)                                                                                                 \
-    if (GFseProbTableTypePending == kzstdgpu_ReferenceStore_Fse##name)                                                    \
-    {                                                                                                               \
-        GZstd.CompressedBlocks[GBlockIndexCMP - 1].fseTableIndex##name = kzstdgpu_FseProbTableIndex_MinRLE + symbol; \
-        GLastTableIndex_Fse##name = GZstd.CompressedBlocks[GBlockIndexCMP - 1].fseTableIndex##name;                 \
+#define STORE(name)                                                                 \
+    if (GFseProbTableTypePending == kzstdgpu_ReferenceStore_Fse##name)              \
+    {                                                                               \
+        GZstd.CompressedBlocks[GBlockIndexCMP - 1].fseTableIndex##name = symbol;    \
+        GLastTableIndex_Fse##name = symbol;                                         \
     }
 
     STORE(LLen)
@@ -804,6 +821,9 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_Blocks(const zstdg
 
 static ZSTDGPU_ENUM(Validate_Result) izstdgpu_ReferenceStore_Validate_FseTable(uint32_t refFseTableIndex,
                                                                          uint32_t tstFseTableIndex,
+                                                                         uint32_t fseInfoOffset,
+                                                                         uint32_t cmpBlockCount,
+                                                                         zstdgpu_FseElemOffsetFn elemOffsetFn,
                                                                          const zstdgpu_FseInfo *refFseInfos,
                                                                          const zstdgpu_FseInfo *tstFseInfos,
                                                                          const int16_t *refFseProbs,
@@ -815,28 +835,38 @@ static ZSTDGPU_ENUM(Validate_Result) izstdgpu_ReferenceStore_Validate_FseTable(u
                                                                          const uint16_t *refFseNStates,
                                                                          const uint16_t *tstFseNStates)
 {
-    // if reference FSE/Huffman table index is an actual index -- the test index should be also an actual index (but it's allowed to be different)
-    if (refFseTableIndex < kzstdgpu_FseProbTableIndex_MinRLE)
+    // All table indices (including RLE 0-255) are valid real indices now
+    if (refFseTableIndex < kzstdgpu_FseProbTableIndex_Repeat)
     {
-        if (tstFseTableIndex >= kzstdgpu_FseProbTableIndex_MinRLE)
+        if (tstFseTableIndex >= kzstdgpu_FseProbTableIndex_Repeat)
             return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
-        if (refFseInfos[refFseTableIndex].fseProbCountAndAccuracyLog2 != tstFseInfos[tstFseTableIndex].fseProbCountAndAccuracyLog2)
+        // For HufW: fseInfoOffset=256 maps localIdx to FseInfos[256+localIdx]
+        // For LLen/Offs/MLen: fseInfoOffset=0, fseTableIndex already includes +256 (or is RLE 0-255)
+        const uint32_t refFseInfoIndex = fseInfoOffset + refFseTableIndex;
+        const uint32_t tstFseInfoIndex = fseInfoOffset + tstFseTableIndex;
+
+        if (refFseInfos[refFseInfoIndex].fseProbCountAndAccuracyLog2 != tstFseInfos[tstFseInfoIndex].fseProbCountAndAccuracyLog2)
             return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
-        const uint32_t probCount = refFseInfos[refFseTableIndex].fseProbCountAndAccuracyLog2 & 0xff;
-        const uint32_t symbolCount = 1u << (refFseInfos[refFseTableIndex].fseProbCountAndAccuracyLog2 >> 8u);
+        const uint32_t probCount = refFseInfos[refFseInfoIndex].fseProbCountAndAccuracyLog2 & 0xff;
+        const uint32_t symbolCount = 1u << (refFseInfos[refFseInfoIndex].fseProbCountAndAccuracyLog2 >> 8u);
 
-        const uint32_t refProbStart = refFseTableIndex * kzstdgpu_MaxCount_FseProbs;
-        const uint32_t tstProbStart = tstFseTableIndex * kzstdgpu_MaxCount_FseProbs;
+        // FseProbs are indexed at (fseInfoIndex - 256) * MaxCount_FseProbs
+        // For RLE (fseInfoIndex < 256), probCount is 0 so no comparison is needed
+        if (probCount > 0)
+        {
+            const uint32_t refProbStart = (refFseInfoIndex - kzstdgpu_FseRleTableCount) * kzstdgpu_MaxCount_FseProbs;
+            const uint32_t tstProbStart = (tstFseInfoIndex - kzstdgpu_FseRleTableCount) * kzstdgpu_MaxCount_FseProbs;
 
-        if (0 != memcmp(&refFseProbs[refProbStart], &tstFseProbs[tstProbStart], probCount * sizeof(refFseProbs[0])))
-            return ZSTDGPU_ENUM_CONST(Validate_Failed);
+            if (0 != memcmp(&refFseProbs[refProbStart], &tstFseProbs[tstProbStart], probCount * sizeof(refFseProbs[0])))
+                return ZSTDGPU_ENUM_CONST(Validate_Failed);
+        }
 
         if (NULL != tstFseSymbols)
         {
-            const uint32_t refElemStart = refFseTableIndex * kzstdgpu_FseElemMaxCount_LLen;
-            const uint32_t tstElemStart = tstFseTableIndex * kzstdgpu_FseElemMaxCount_LLen;
+            const uint32_t refElemStart = elemOffsetFn(refFseTableIndex, cmpBlockCount);
+            const uint32_t tstElemStart = elemOffsetFn(tstFseTableIndex, cmpBlockCount);
 
             if (0 != memcmp(&refFseSymbols[refElemStart], &tstFseSymbols[tstElemStart], symbolCount * sizeof(refFseSymbols[0])))
                 return ZSTDGPU_ENUM_CONST(Validate_Failed);
@@ -886,10 +916,11 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_FseTables(const zs
     for (uint32_t i = 0; i < GBlockCountCMP; ++i)
     {
          // Validate Referred FSE Tables
-        #define VALIDATE_FSE_TABLE_CONTENT(name)                \
+        #define VALIDATE_FSE_TABLE_CONTENT(name, infoOfs, elemFn) \
             izstdgpu_ReferenceStore_Validate_FseTable(          \
                 ref->CompressedBlocks[i].fseTableIndex##name,   \
                 tst->CompressedBlocks[i].fseTableIndex##name,   \
+                infoOfs, GBlockCountCMP, elemFn,                \
                 ref->FseInfos,                                  \
                 tst->FseInfos,                                  \
                 ref->FseProbs,                                  \
@@ -910,17 +941,17 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_FseTables(const zs
             if (!(tst->CompressedBlocks[i].fseTableIndexHufW < GFseProbTableIndexHufW))
                 return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
-            if (ZSTDGPU_ENUM_CONST(Validate_Success) != VALIDATE_FSE_TABLE_CONTENT(HufW))
+            if (ZSTDGPU_ENUM_CONST(Validate_Success) != VALIDATE_FSE_TABLE_CONTENT(HufW, kzstdgpu_FseRleTableCount, zstdgpu_ComputeFseDataStartHufW))
                 return ZSTDGPU_ENUM_CONST(Validate_Failed);
         }
 
-        if (ZSTDGPU_ENUM_CONST(Validate_Success) != VALIDATE_FSE_TABLE_CONTENT(LLen))
+        if (ZSTDGPU_ENUM_CONST(Validate_Success) != VALIDATE_FSE_TABLE_CONTENT(LLen, 0, zstdgpu_ComputeFseDataStartFromFseIndexLLen))
             return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
-        if (ZSTDGPU_ENUM_CONST(Validate_Success) != VALIDATE_FSE_TABLE_CONTENT(Offs))
+        if (ZSTDGPU_ENUM_CONST(Validate_Success) != VALIDATE_FSE_TABLE_CONTENT(Offs, 0, zstdgpu_ComputeFseDataStartFromFseIndexOffs))
             return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
-        if (ZSTDGPU_ENUM_CONST(Validate_Success) != VALIDATE_FSE_TABLE_CONTENT(MLen))
+        if (ZSTDGPU_ENUM_CONST(Validate_Success) != VALIDATE_FSE_TABLE_CONTENT(MLen, 0, zstdgpu_ComputeFseDataStartFromFseIndexMLen))
             return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
 
