@@ -16,8 +16,12 @@
 #include <stdio.h>    // fprintf
 #include <string.h>   // memset, memcpy
 #include "zstd_decompress.h"
-#include "zstdgpu_reference_store.h"
 
+#if defined(DISABLE_ZSTDGPU_REFERENCE_STORE)
+// no reference store will be used
+#else
+#include "zstdgpu_reference_store.h"
+#endif
 
 /******* IMPORTANT CONSTANTS *********************************************/
 
