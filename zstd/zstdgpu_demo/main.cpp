@@ -852,6 +852,8 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
     uint32_t gpuDevId = ~0u;    // means -- find any device id
     uint32_t repCount = 10;
     uint32_t prfLevel = 0;
+    uint32_t minFrame = 0;
+    uint32_t maxFrame = ~0u;
 
 #ifndef _GAMING_XBOX
     {
@@ -862,6 +864,8 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
             bool nextGpuDevId = false;
             bool nextRepCount = false;
             bool nextPrfLevel = false;
+            bool nextMinFrame = false;
+            bool nextMaxFrame = false;
             for (argi = 1; argi < argc; ++argi)
             {
                 if (nextZst)
@@ -885,7 +889,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
                     nextGpuVenId = false;
                     nextGpuDevId = false;
                 }
-                else if (nextRepCount || nextPrfLevel)
+                else if (nextRepCount || nextPrfLevel || nextMinFrame || nextMaxFrame)
                 {
                     errno = 0;
                     wchar_t *end = NULL;
@@ -896,10 +900,16 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
                             repCount = value;
                         else if (nextPrfLevel)
                             prfLevel = value;
+                        else if (nextMinFrame)
+                            minFrame = value;
+                        else if (nextMaxFrame)
+                            maxFrame = value;
                     }
 
                     nextRepCount = false;
                     nextPrfLevel = false;
+                    nextMinFrame = false;
+                    nextMaxFrame = false;
                 }
                 else if (0 == wcscmp(argv[argi], L"--chk-gpu"))
                 {
@@ -945,6 +955,14 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
                 {
                     nextPrfLevel = true;
                 }
+                else if (0 == wcscmp(argv[argi], L"--idx-min"))
+                {
+                    nextMinFrame = true;
+                }
+                else if (0 == wcscmp(argv[argi], L"--idx-max"))
+                {
+                    nextMaxFrame = true;
+                }
             }
             if (1 == argc)
             {
@@ -960,6 +978,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
                 debugPrint(L"\t--run-cnt <count>         [Optional] The number of times to repeat the experiment.\n");
                 debugPrint(L"\t--ext-mem                 [Optional] Enables external heaps so the library doesn't create them.\n");
                 debugPrint(L"\t--prf-lvl <0, 1, 2>       [Optional] Chooses the level of profiling: 0 - overall bandwidth in GB/s, 1 - stage cost, 2 - internal pass cost.\n");
+                debugPrint(L"\t--idx-{min,max} <number>  [Optional] Chooses the {minimal, maximal} index of the frame to decompress in multi-frame .zst file. Both values are clamped to the number of available frames.\n");
             }
             if (NULL == zstFilePathStorage)
             {
@@ -992,6 +1011,27 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
     zstdgpu_OffsetAndSize *zstdOutFrameRefs = (zstdgpu_OffsetAndSize *)malloc(sizeof(zstdgpu_OffsetAndSize) * fbInfo.frameCount);
     zstdgpu_CollectFrames(zstdInFrameRefs, zstdFrameInfo, fbInfo.frameCount, zstdData, zstdCompressedFramesMemorySizeInBytes, zstdDataSize);
 
+    void *zstdDataFree = zstdData;
+    const uint32_t endFrame = fbInfo.frameCount - 1;
+
+
+    // NOTE(pamartis): Support the option to choose a range of frame in the input package/data
+    if (minFrame > 0 || maxFrame < endFrame)
+    {
+        maxFrame = maxFrame < endFrame
+                 ? maxFrame : endFrame;
+        minFrame = minFrame < maxFrame
+                 ? minFrame : maxFrame;
+
+        zstdData = (char*)zstdData + zstdInFrameRefs[minFrame].offs;
+        zstdDataSize = zstdInFrameRefs[maxFrame].offs - zstdInFrameRefs[minFrame].offs + zstdInFrameRefs[maxFrame].size;
+        zstdCompressedFramesMemorySizeInBytes = (zstdDataSize + 3) & ~3u;
+
+        // NOTE(pamartis): update all structures because 'zstdData' and 'zstdDataSize' has changed
+        zstdgpu_CountFramesAndBlocks(&fbInfo, zstdData, zstdCompressedFramesMemorySizeInBytes, zstdDataSize);
+        zstdgpu_CollectFrames(zstdInFrameRefs, zstdFrameInfo, fbInfo.frameCount, zstdData, zstdCompressedFramesMemorySizeInBytes, zstdDataSize);
+    }
+
     // NOTE(pamartis): compute offsets of frame in the output data using the decompressed frame sizes.
     // We also align offset to make sure we support writing several non-consecutive frames from zstdgpu
     // Beceause zstd format doesn't guarantee the presense of uncompressed frame size, we check if any
@@ -1018,7 +1058,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
             free(zstdOutFrameRefs);
             free(zstdInFrameRefs);
             free(zstdFrameInfo);
-            free(zstdData);
+            free(zstdDataFree);
             if (NULL != zstFilePathStorage)
                 free(zstFilePathStorage);
 
@@ -1553,7 +1593,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
     free(zstdOutFrameRefs);
     free(zstdInFrameRefs);
     free(zstdFrameInfo);
-    free(zstdData);
+    free(zstdDataFree);
     if (NULL != zstFilePathStorage)
         free(zstFilePathStorage);
 
