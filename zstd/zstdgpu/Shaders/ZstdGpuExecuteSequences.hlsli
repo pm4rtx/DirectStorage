@@ -20,10 +20,6 @@
 ZSTDGPU_EXECUTE_SEQUENCES_SRT()
 #include "../zstdgpu_srt_decl_undef.h"
 
-#ifndef MAX_COPY_SIZE
-#define MAX_COPY_SIZE 32
-#endif
-
 [RootSignature("DescriptorTable(SRV(t0, numDescriptors=12), UAV(u0, numDescriptors=2))")]
 [numthreads(MAX_COPY_SIZE, 1, 1)]
 void main(uint groupId : SV_GroupId, uint i : SV_GroupThreadId)

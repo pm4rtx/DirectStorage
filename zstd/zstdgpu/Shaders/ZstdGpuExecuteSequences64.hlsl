@@ -15,4 +15,4 @@
  */
 
 #define MAX_COPY_SIZE 64
-#include "ZstdGpuExecuteSequences.hlsl"
+#include "ZstdGpuExecuteSequences.hlsli"

@@ -4048,6 +4048,22 @@ static void zstdgpu_ShaderEntry_FinaliseSequenceOffsets(ZSTDGPU_PARAM_INOUT(zstd
     srt.inoutDecompressedSequenceOffs[seqIdx] = offset;
 }
 
+struct zstdgpu_Sequence
+{
+    uint32_t mlen;
+    uint32_t llen;
+    uint32_t offs;
+};
+
+static zstdgpu_Sequence zstdgpu_LoadSequence(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteSequences_SRT) srt, uint32_t seqIdx)
+{
+    zstdgpu_Sequence seq;
+    seq.mlen = srt.inDecompressedSequenceMLen[seqIdx];
+    seq.llen = srt.inDecompressedSequenceLLen[seqIdx];
+    seq.offs = srt.inDecompressedSequenceOffs[seqIdx];
+    return seq;
+}
+
 static void zstdgpu_MemSet(ZSTDGPU_RW_TYPED_BUFFER(uint32_t, uint8_t) dstData,
                            ZSTDGPU_PARAM_INOUT(uint32_t) dstOfs,
                            uint32_t srcSym,
@@ -4087,57 +4103,61 @@ static void zstdgpu_MemCpy_DstSrc(ZSTDGPU_RW_TYPED_BUFFER(uint32_t, uint8_t) dst
     }
 }
 
-static void zstdgpu_MemCpy_DstOfs(ZSTDGPU_RW_TYPED_BUFFER(uint32_t, uint8_t) dstData,
-                                  ZSTDGPU_PARAM_INOUT(uint32_t) dstOfs,
-                                  uint32_t srcOfs,
-                                  uint32_t srcCnt,
-                                  uint32_t dstEnd  //< NOTE(pamartis): this one is passed for safety clamp, could be ignored
-                                  )
+static void zstdgpu_MatchCopy(ZSTDGPU_RW_TYPED_BUFFER(uint32_t, uint8_t) dstData,
+                              ZSTDGPU_PARAM_INOUT(uint32_t) dstOfs,
+                              zstdgpu_Sequence seq,
+                              uint32_t dstEnd  //< NOTE(pamartis): this one is passed for safety clamp, could be ignored
+                              )
 {
-    ZSTDGPU_BRANCH if (srcOfs >= WaveGetLaneCount())
+    const uint32_t laneCount = WaveGetLaneCount();
+    const uint32_t laneId = WaveGetLaneIndex();
+
+    // When either path could handle the match copy, prefer this one since there is no modulo.
+    ZSTDGPU_BRANCH if (seq.offs >= zstdgpu_MinU32(laneCount, seq.mlen))
     {
-        uint32_t dstI = dstOfs + WaveGetLaneIndex();
-        dstOfs += srcCnt;
+        uint32_t dstI = dstOfs + laneId;
+        dstOfs += seq.mlen;
         dstEnd = zstdgpu_MinU32(dstEnd, dstOfs); //< NOTE(pamartis): could skip min
 
-        ZSTDGPU_LOOP for (; dstI < dstEnd; dstI += WaveGetLaneCount())
+        ZSTDGPU_LOOP for (; dstI < dstEnd; dstI += laneCount)
         {
-            zstdgpu_TypedStoreU8(dstData, dstI, dstData[dstI - srcOfs]);
+            zstdgpu_TypedStoreU8(dstData, dstI, dstData[dstI - seq.offs]);
         }
     }
-    else
+    else // 'seq.offs < seq.mlen && seq.offs < laneCount':
     {
-        const uint32_t laneId = WaveGetLaneIndex();
-
-        // NOTE(pamartis): the case 'srcOfs' is short, so we can't start writing 'WaveGetLaneCount' chunks at a time...
-        // Therefore, we fetch 'srcOffs' bytes ...
         uint32_t srcSym = 0;
-        ZSTDGPU_BRANCH if (laneId < srcOfs)
+        ZSTDGPU_BRANCH if (laneId < seq.offs)
         {
-            srcSym = dstData[dstOfs + laneId - srcOfs];
+            srcSym = dstData[dstOfs + laneId - seq.offs];
         }
 
-        // .. and construct a chunk of memory of size 'WaveGetLaneCount() - WaveGetLaneCount % srcOfs' where
-        // 'srcOfs' bytes are repeated 'WaveGetLaneCount() / srcOfs' times.
-        // The purpose of that -- is to construct the widest chunk possible that we can repeat copying by the entire wave
-        ZSTDGPU_BRANCH if (srcOfs <= WaveGetLaneCount() / 2)
+        const uint32_t copyLen = zstdgpu_MinU32(dstEnd - dstOfs, seq.mlen); //< NOTE(pamartis): could skip min
+
+        // NOTE(jweinste): It is undefined what is returned upon reading from an inactive lane via WaveReadLaneAt()
+        // (most current drivers seem to yield 0 for this case).
+        // Hence, we must place the loop exit/break carefully.
+        //
+        // Consider this example:
+        //      "ABC", offs=3, mlen=9 // initial data
+        //      "ABCABCABCABC"        // expected output
+        //
+        //      Say WaveSize = 4:
+        //          Store 0: stores ABCA = swizzle(ABC, {0,1,2,0}).
+        //          Store 1: stores BCAB = swizzle(ABC, {1,2,0,1}).
+        //          Store 2: only lane 0 can be active for the store, but the element it wants (C) is in lane 2.
+        for (uint32_t copyId = laneId; /* mid-break in the loop */; copyId += laneCount)
         {
-            srcSym = WaveReadLaneAt(srcSym, laneId % srcOfs); //< NOTE(pamartis): We could replace 'mod' operation by Lemire'19 approach and precomputing up to 128 constants..
-        }
-
-        const uint32_t copySize = WaveGetLaneCount() - WaveGetLaneCount() % srcOfs;
-
-        uint32_t dstI = dstOfs + laneId;
-        dstOfs += srcCnt;
-        dstEnd = zstdgpu_MinU32(dstEnd, dstOfs); //< NOTE(pamartis): could skip min
-
-        ZSTDGPU_BRANCH if (laneId < copySize)
-        {
-            ZSTDGPU_LOOP for (; dstI < dstEnd; dstI += copySize)
+            //< NOTE(pamartis): We could replace 'mod' operation by Lemire'19 approach and precomputing up to 128 constants..
+            const uint32_t swizzled = WaveReadLaneAt(srcSym, copyId % seq.offs);
+            // Deactivate lanes only after doing WaveReadLaneAt.
+            if (copyId >= copyLen)
             {
-                zstdgpu_TypedStoreU8(dstData, dstI, srcSym);
+                break;
             }
+            zstdgpu_TypedStoreU8(dstData, dstOfs + copyId, swizzled);
         }
+        dstOfs += copyLen;
     }
 }
 
@@ -4178,12 +4198,10 @@ static void zstdgpu_ExecuteSequences_Lit(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteSequ
     ZSTDGPU_LOOP for (; seqIdx < seqEnd; ++seqIdx)
     {
         // NOTE(pamartis): these are still uniform variables HLSL has no way of enforcing....
-        const uint32_t mlen = srt.inDecompressedSequenceMLen[seqIdx];
-        const uint32_t llen = srt.inDecompressedSequenceLLen[seqIdx];
-        const uint32_t offs = srt.inDecompressedSequenceOffs[seqIdx];
+        zstdgpu_Sequence seq = zstdgpu_LoadSequence(srt, seqIdx);
 
-        zstdgpu_MemCpy_DstSrc(srt.inoutUnCompressedFramesData, dstOfs, litBuf, litOfs, llen, dstEnd);
-        zstdgpu_MemCpy_DstOfs(srt.inoutUnCompressedFramesData, dstOfs, offs, mlen, dstEnd);
+        zstdgpu_MemCpy_DstSrc(srt.inoutUnCompressedFramesData, dstOfs, litBuf, litOfs, seq.llen, dstEnd);
+        zstdgpu_MatchCopy(srt.inoutUnCompressedFramesData, dstOfs, seq, dstEnd);
     }
 
     // NOTE(pamartis): copy remaining literals. If there's no sequences, we copy the entire literal block.
@@ -4293,13 +4311,11 @@ static void zstdgpu_ShaderEntry_ExecuteSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_Exe
             ZSTDGPU_LOOP for (uint32_t seqIdx = seqOfs; seqIdx < seqEnd; ++seqIdx)
             {
                 // NOTE(pamartis): these are still uniform variables HLSL has no way of enforcing....
-                const uint32_t mlen = srt.inDecompressedSequenceMLen[seqIdx];
-                const uint32_t llen = srt.inDecompressedSequenceLLen[seqIdx];
-                const uint32_t offs = srt.inDecompressedSequenceOffs[seqIdx];
+                zstdgpu_Sequence seq = zstdgpu_LoadSequence(srt, seqIdx);
 
-                zstdgpu_MemSet(srt.inoutUnCompressedFramesData, blockByteCur, symbol, llen, blockByteEnd);
-                litCur += llen;
-                zstdgpu_MemCpy_DstOfs(srt.inoutUnCompressedFramesData, blockByteCur, offs, mlen, blockByteEnd);
+                zstdgpu_MemSet(srt.inoutUnCompressedFramesData, blockByteCur, symbol, seq.llen, blockByteEnd);
+                litCur += seq.llen;
+                zstdgpu_MatchCopy(srt.inoutUnCompressedFramesData, blockByteCur, seq, blockByteEnd);
             }
 
             // NOTE(pamartis): copy remaining literals. If above condtion `seqStreamIdx == ~0u` is true,

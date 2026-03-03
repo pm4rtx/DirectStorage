@@ -554,23 +554,28 @@ static inline uint32_t zstdgpu_FindFirstBitHiU32(uint32_t v)
 #endif
 }
 
+// The input to this function must not be 0.
 static inline uint32_t zstdgpu_FindFirstBitHiU32_Nonzero(uint32_t v)
 {
 #ifdef __hlsl_dx_compiler
-    // On AMD RDNA3, {v,s}_clz_i32_u32 return -1 for an input of 0, instead of returning 32.
-    // So firstbithigh can't directly be implemented as 31 - {v,s}_clz_i32_u32;
-    // there are additional fixup instructions, currently even when or-ing the input with 1.
-    // The current AMD driver compiler does not do a great job with uniform firstbithigh:
-    //          v_clz_i32_u32   v0, s10             // input s10 is scalar, but didn't use SALU s_clz_i32_u32
+    // HLSL's firstbithigh is like _BitScanReverse and returns -1 for an input of 0.
+    // However, the FirstbitHi DXIL instruction is like a count-leading-zeros, but it returns -1
+    // (instead of 32) for an input of 0. DXC expands firstbithigh into four DXIL instructions
+    // (FirstbitHi, sub, icmp, select). So the following formulation actually saves a DXIL instruction,
+    // and should be good on at least AMD RDNA3 ({v,s}_{ctz,clz}_i32_b32 match DXIL FirstBit{Lo,Hi} semantics),
+    // especially since its current shader compiler doesn't seem to emit the SALU version of clz_i32_u32.
+    // This method does not yield the same answer for an input of 0.
+    //
+    // ISA for HLSL firstbithigh:
+    //          v_clz_i32_u32   v0, s10
     //          v_sub_nc_u32    v1, 31, v0
     //          v_cmp_ne_i32    vcc_lo, -1, v0
     //          v_cndmask_b32   v0, -1, v1, vcc_lo  // final result in v0
-    // The following formulation gets us:
+    //
+    // ISA for the following:
     //          s_brev_b32    s13, s10
     //          s_ctz_i32_b32 s13, s13
     //          s_sub_u32     s13, 31, s13          // final result in s13
-    // Which isn't identical when v==0, so only use this when v!=0.
-    // If input is non-uniform (VALU), we still save an instruction.
     return 31 - firstbitlow(reversebits(v));
 #else
     unsigned long index = 0;
