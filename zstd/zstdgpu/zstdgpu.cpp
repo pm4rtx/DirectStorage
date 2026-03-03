@@ -1500,6 +1500,11 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         else
         {
             // last written by [Parse Frames :: Collect Blocks]
+            // next read by [Readback Counters :: After Block Parse] and updated by [Update Dispatch Args]
+            setResourceUavToSrvSync(barriers, bc + 0, req->resData.gpuOnly.Counters);
+            bc += 1;
+
+            // last written by [Parse Frames :: Collect Blocks]
             // next updated by [Prefix Block Sizes]
             setResourceUavSync(barriers, bc + 0, req->resData.gpuOnly.BlockSizePrefix);
             bc += 1;
@@ -1567,7 +1572,7 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXEndEvent(cmdList);
     }
     {
-        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Readback Counters :: After Block Parse");
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Readback Counters :: After Block Parse]");
         zstdgpu_PushReadback(Counters);
         PIXEndEvent(cmdList);
     }
@@ -2019,6 +2024,14 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         );
         PIXEndEvent(cmdList);
     }
+    if (req->zstdCmpBlockCount > 0)
+    {
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier with Resources for [Readback Counters :: After Block Decompression]");
+        D3D12_RESOURCE_BARRIER barriers[1];
+        setResourceUavToSrvSync(barriers, 0, req->resData.gpuOnly.Counters);
+        cmdList->ResourceBarrier(_countof(barriers), barriers);
+        PIXEndEvent(cmdList);
+    }
     if (0) /** IMPORTANT: requires DecompressedSequencesMLen to contain inclusive prefix of total sequence sizes */
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Compute Dest Sequence Offsets]");
@@ -2028,6 +2041,12 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
 
         PIXEndEvent(cmdList);
     }
+    if (req->zstdCmpBlockCount > 0) /* Readback for Counters is only needed if the number of compressed blocks > 0 because Counters are updated during Seqeunce Execution */
+    {
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Readback Counters :: After Block Decompression]");
+        zstdgpu_PushReadback(Counters);
+        PIXEndEvent(cmdList);
+    }
 }
 
 ZSTDGPU_API void zstdgpu_ReadbackGpuResults(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandList *cmdList)
@@ -2035,7 +2054,7 @@ ZSTDGPU_API void zstdgpu_ReadbackGpuResults(zstdgpu_PerRequestContext req, ID3D1
     // NOTE(pamartis): these are required to make sure D3D12 validation doesn't complain about state mismatch when
     // Read-only resource from the last stage get a NON_PS_RESOURCE state as a result of promotion from COMMON state
     // and then used as COPY_SOURCE for debug readback
-    D3D12_RESOURCE_BARRIER barriers[14];
+    D3D12_RESOURCE_BARRIER barriers[13];
     uint32_t bc = 0;
     setResourceState(barriers, 0, req->resData.gpuOnly.PerFrameBlockCountCMP, NON_PIXEL_SHADER_RESOURCE, COPY_SOURCE);
     setResourceState(barriers, 1, req->resData.gpuOnly.PerFrameBlockCountAll, NON_PIXEL_SHADER_RESOURCE, COPY_SOURCE);
@@ -2047,8 +2066,7 @@ ZSTDGPU_API void zstdgpu_ReadbackGpuResults(zstdgpu_PerRequestContext req, ID3D1
     {
         setResourceState(barriers, bc + 0, req->resData.gpuOnly.GlobalBlockIndexPerCmpBlock, NON_PIXEL_SHADER_RESOURCE, COPY_SOURCE);
         setResourceState(barriers, bc + 1, req->resData.gpuOnly.PerSeqStreamSeqStart, NON_PIXEL_SHADER_RESOURCE, COPY_SOURCE);
-        setResourceUavToSrvCopyIndirectSync(barriers, bc + 2, req->resData.gpuOnly.Counters);
-        bc += 3;
+        bc += 2;
     }
     if (req->zstdRawBlockCount > 0)
     {
