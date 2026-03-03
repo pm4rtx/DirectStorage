@@ -233,7 +233,11 @@ static void zstdgpu_Init_FinaliseSequenceOffsets_SRT(zstdgpu_FinaliseSequenceOff
 #define STRINGIZE2(x) #x
 #define VALIDATE(name) \
     if (ZSTDGPU_ENUM_CONST(Validate_Success) != zstdgpu_ReferenceStore_Validate_##name) \
-        debugPrint(L"Validation of "#name" failed in function: " __FUNCTION__ ", file: " __FILE__ ", line: " STRINGIZE(__LINE__) "\n")
+        debugPrint(L"[FAIL] Validation of '"#name"' failed in function: " __FUNCTION__ ", file: " __FILE__ ", line: " STRINGIZE(__LINE__) "\n")
+
+#define VALIDATE_CND(cnd) \
+    if (!(cnd)) \
+        debugPrint(L"[FAIL] Validation of '"#cnd"' failed in function: " __FUNCTION__ ", file: " __FILE__ ", line: " STRINGIZE(__LINE__) "\n")
 
 static void zstdgpu_Test_DecompressHuffmanWeights(zstdgpu_ResourceDataCpu & cpuRes, zstdgpu_ResourceDataCpu & gpuReadbackRes, uint32_t zstdDataBufferSize, bool chkGpu, bool simGpu)
 {
@@ -430,6 +434,62 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
         }
 
     }
+}
+
+static void zstdgpu_Test_BlockPrefix(zstdgpu_ResourceDataCpu & cpuRes, zstdgpu_ResourceDataCpu & gpuReadbackRes)
+{
+    /** these buffers could be zero if some block types don't exist */
+    if (NULL != cpuRes.GlobalBlockIndexPerCmpBlock)
+        VALIDATE_CND(0 == memcmp(cpuRes.GlobalBlockIndexPerCmpBlock, gpuReadbackRes.GlobalBlockIndexPerCmpBlock, sizeof(cpuRes.GlobalBlockIndexPerCmpBlock[0])));
+
+    if (NULL != cpuRes.GlobalBlockIndexPerRawBlock)
+        VALIDATE_CND(0 == memcmp(cpuRes.GlobalBlockIndexPerRawBlock, gpuReadbackRes.GlobalBlockIndexPerRawBlock, sizeof(cpuRes.GlobalBlockIndexPerRawBlock[0])));
+
+    if (NULL != cpuRes.GlobalBlockIndexPerRleBlock)
+        VALIDATE_CND(0 == memcmp(cpuRes.GlobalBlockIndexPerRleBlock, gpuReadbackRes.GlobalBlockIndexPerRleBlock, sizeof(cpuRes.GlobalBlockIndexPerRleBlock[0])));
+
+    VALIDATE_CND(0 == memcmp(cpuRes.BlockSizePrefix, gpuReadbackRes.BlockSizePrefix, sizeof(cpuRes.BlockSizePrefix[0])));
+}
+
+static uint32_t zstdgpu_Test_DecompressedDataPerBlockType(const uint32_t *gpuGlobalBlockIndex,
+                                                          const uint32_t blockCount,
+                                                          const uint32_t *gpuPerFrameBlockCountPrefix,
+                                                          const zstdgpu_OffsetAndSize *cpuPerFrameOffsAndSize,
+                                                          const uint32_t frameCount,
+                                                          const uint32_t *gpuBlockSizePrefix,
+                                                          const void *refData,
+                                                          const void *tstData)
+{
+    uint32_t failedBlockCount = 0;
+    for (uint32_t i = 0; i < blockCount; ++i)
+    {
+        const uint32_t globalBlockIdx = gpuGlobalBlockIndex[i];
+
+        // We start by finding the right frame index for currently processed block
+        const uint32_t frameIndex = zstdgpu_BinarySearch(gpuPerFrameBlockCountPrefix, 0, frameCount, globalBlockIdx);
+
+        // and get the index of the first block in this frame
+        const uint32_t firstInFrameGlobalBlockIndex = gpuPerFrameBlockCountPrefix[frameIndex];
+
+        // knowing the index of the first block in the frame, we read its offset (tight one, non-aligned or anything)
+        uint32_t firstInFrameBlockDataBeg = 0;
+        if (firstInFrameGlobalBlockIndex > 0)
+            firstInFrameBlockDataBeg = gpuBlockSizePrefix[firstInFrameGlobalBlockIndex - 1];
+
+        // we read the data start and end for a given block
+        const uint32_t refDataBlockDataEnd = gpuBlockSizePrefix[globalBlockIdx];
+        const uint32_t refDataBlockDataBeg = globalBlockIdx == 0 ? 0 : gpuBlockSizePrefix[globalBlockIdx - 1];
+
+        // rebase those offset into new offset (provided by CPU-side meta buffer), so data offset become relative not relative to start of the the first block)
+        const uint32_t tstDataBlockDataBeg = cpuPerFrameOffsAndSize[frameIndex].offs + (refDataBlockDataBeg - firstInFrameBlockDataBeg);
+        const uint32_t tstDataBlockDataEnd = cpuPerFrameOffsAndSize[frameIndex].offs + (refDataBlockDataEnd - firstInFrameBlockDataBeg);
+
+        const uint32_t size = refDataBlockDataEnd - refDataBlockDataBeg;
+        ZSTDGPU_ASSERT(tstDataBlockDataEnd <= cpuPerFrameOffsAndSize[frameIndex].offs + cpuPerFrameOffsAndSize[frameIndex].size);
+
+        failedBlockCount += (0 != memcmp((char*)refData + refDataBlockDataBeg, (char*)tstData + tstDataBlockDataBeg, size));
+    }
+    return failedBlockCount;
 }
 
 /**
@@ -903,7 +963,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
             }
             if (NULL == zstFilePathStorage)
             {
-                debugPrint(L"WARN: No '--zst <path to .zst file>' option was specified, running with pre-defined file path: '%s'.\n", zstFilePath);
+                debugPrint(L"[WARN] No '--zst <path to .zst file>' option was specified, running with pre-defined file path: '%s'.\n", zstFilePath);
             }
         }
     }
@@ -916,12 +976,12 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
     loadFileAligned(&zstdData, &zstdDataSize, &zstdCompressedFramesMemorySizeInBytes, 2u, zstFilePath);
     if (NULL == zstdData)
     {
-        debugPrint(L"FAIL: Couldn't load '%s'. Early Out.\n", zstFilePath);
+        debugPrint(L"[FAIL] Couldn't load '%s'. Early Out.\n", zstFilePath);
         return ERROR_FILE_NOT_FOUND;
     }
     else
     {
-        debugPrint(L"Loaded '%s' -- %u bytes.\n", zstFilePath, zstdDataSize);
+        debugPrint(L"[INFO] Loaded '%s' -- %u bytes.\n", zstFilePath, zstdDataSize);
     }
 
     zstdgpu_CountFramesAndBlocksInfo fbInfo;
@@ -953,7 +1013,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
 
         if (fbInfo.frameCount != vcnt)
         {
-            debugPrint(L"FAIL: Some frames don't carry uncompressed size. Early Out.\n");
+            debugPrint(L"[FAIL] Some frames don't carry uncompressed size. Early Out.\n");
 
             free(zstdOutFrameRefs);
             free(zstdInFrameRefs);
@@ -974,6 +1034,11 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
 #endif
 
     ID3D12Device *device = zstdgpu_Demo_PlatformInit(gpuVenId, gpuDevId, d3dDbg);
+    if (NULL == device)
+    {
+        debugPrint(L"[FAIL] Couldn't load create D3D12 device with venId=%u, devId=%u. Early Out.\n", gpuVenId, gpuDevId);
+        return ERROR_SYSTEM_DEVICE_NOT_FOUND;
+    }
 
     d3d12aid_CmdQueue cmdQueue;
 #ifdef _GAMING_XBOX
@@ -1004,12 +1069,12 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
     if (simGpu)
     {
         chkCpu = true;
-        debugPrint(L"[VALIDATION] Option '--sim-gpu' was set. Enabling '--chk-cpu' automatically (required by '--sim-gpu').\n");
+        debugPrint(L"[INFO] Option '--sim-gpu' was set. Enabling '--chk-cpu' automatically (required by '--sim-gpu').\n");
     }
 
     if (chkCpu || chkGpu)
     {
-        debugPrint(L"[VALIDATION] Running Reference Decompression and building Reference Uncompressed data ('--chk-cpu' or '--chk-gpu' was set).\n");
+        debugPrint(L"[INFO] Running Reference Decompression and building Reference Uncompressed data ('--chk-cpu' or '--chk-gpu' was set).\n");
 
         zstdReferenceUncompressedDataSize = (uint32_t)ZSTD_get_decompressed_size(zstdData, zstdDataSize);
         zstdReferenceUncompressedData = malloc(zstdReferenceUncompressedDataSize);
@@ -1290,28 +1355,71 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
                     zstdgpu_Test_DecompressHuffmanWeights(zstdCpu, gpuData, zstdCompressedFramesMemorySizeInBytes, chkGpu, simGpu);
                     zstdgpu_Test_DecompressLiterals(zstdCpu, gpuData, zstdCompressedFramesMemorySizeInBytes, chkGpu, simGpu);
                     zstdgpu_Test_DecompressSequences(zstdCpu, gpuData, zstdCompressedFramesMemorySizeInBytes, chkGpu, simGpu);
-                }
-                if (chkGpu)
-                {
-                    uint32_t refOffs = 0;
-                    for (uint32_t i = 0; i < fbInfo.frameCount; ++i)
-                    {
-                        const char *ref = (char*)zstdReferenceUncompressedData + refOffs;
-                        const char *tst = (char*)zstdUnCompressedFramesMemory.bufMem[0] + zstdOutFrameRefs[i].offs;
-                        int result = memcmp(tst, ref, zstdOutFrameRefs[i].size);
-                        refOffs += zstdOutFrameRefs[i].size;
 
-                        if (0 != result)
+                    if (chkCpu && chkGpu)
+                        zstdgpu_Test_BlockPrefix(zstdCpu, gpuData);
+
+                    if (chkGpu)
+                    {
+                        uint32_t failedFrameCount = 0;
+
                         {
-                            debugPrint(L"[VALIDATION] Failed to verify decompressed 'frame %u' against decompressed frame from reference decompressor\n", i);
-                            for (uint32_t j = 0; j < zstdOutFrameRefs[i].size; ++j)
+                            const char *ref = (char*)zstdReferenceUncompressedData;
+                            const char *tst = (char*)zstdUnCompressedFramesMemory.bufMem[0];
+                            for (uint32_t i = 0; i < fbInfo.frameCount; ++i)
                             {
-                                if (tst[j] != ref[j])
-                                {
-                                    debugPrint(L"[VALIDATION] The first byte failing validation is '%u'\n", j);
-                                    break;
-                                }
+                                failedFrameCount += (0 != memcmp(ref, tst + zstdOutFrameRefs[i].offs, zstdOutFrameRefs[i].size));
+
+                                ref += zstdOutFrameRefs[i].size;
                             }
+                        }
+
+                        if (failedFrameCount > 0)
+                        {
+                            const char *ref = (char*)zstdReferenceUncompressedData;
+                            const char *tst = (char*)zstdUnCompressedFramesMemory.bufMem[0];
+
+                            debugPrint(L"[FAIL] %u/%u frames failed validation.\n", failedFrameCount, fbInfo.frameCount);
+
+                            const uint32_t failedRawBlockCount = zstdgpu_Test_DecompressedDataPerBlockType(
+                                gpuData.GlobalBlockIndexPerRawBlock,
+                                fbInfo.rawBlockCount,
+                                gpuData.PerFrameBlockCountAll,
+                                zstdOutFrameRefs,
+                                fbInfo.frameCount,
+                                gpuData.BlockSizePrefix,
+                                ref,
+                                tst
+                            );
+
+                            const uint32_t failedRleBlockCount = zstdgpu_Test_DecompressedDataPerBlockType(
+                                gpuData.GlobalBlockIndexPerRleBlock,
+                                fbInfo.rleBlockCount,
+                                gpuData.PerFrameBlockCountAll,
+                                zstdOutFrameRefs,
+                                fbInfo.frameCount,
+                                gpuData.BlockSizePrefix,
+                                ref,
+                                tst
+                            );
+
+                            const uint32_t failedCmpBlockCount = zstdgpu_Test_DecompressedDataPerBlockType(
+                                gpuData.GlobalBlockIndexPerCmpBlock,
+                                fbInfo.cmpBlockCount,
+                                gpuData.PerFrameBlockCountAll,
+                                zstdOutFrameRefs,
+                                fbInfo.frameCount,
+                                gpuData.BlockSizePrefix,
+                                ref,
+                                tst
+                            );
+
+                            if (failedRawBlockCount > 0 || failedRleBlockCount > 0)
+                                debugPrint(L"[FAIL] %u/%u RAW blocks and %u/%u RLE blocks failed validation. Likely MemCpy/MemSet pass is broken, unless ExecuteSequence stomps the memory written by MemCpu/MemSet.\n", failedRawBlockCount, fbInfo.rawBlockCount, failedRleBlockCount, fbInfo.rleBlockCount);
+
+                            if (failedCmpBlockCount > 0)
+                                debugPrint(L"[FAIL] %u/%u CMP blocks failed validation. ExecuteSequences is likely broken unless an issue happens earlier in the pipeline or unless TDR is hit.\n", failedCmpBlockCount, fbInfo.cmpBlockCount);
+
                         }
                     }
                 }
