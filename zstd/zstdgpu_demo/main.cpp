@@ -891,6 +891,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
             bool nextPrfLevel = false;
             bool nextMinFrame = false;
             bool nextMaxFrame = false;
+            bool badArg = false;
             for (argi = 1; argi < argc; ++argi)
             {
                 if (nextZst)
@@ -988,8 +989,13 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
                 {
                     nextMaxFrame = true;
                 }
+                else
+                {
+                    debugPrint(L"Unknown argv[%d] %s\n", argi, argv[argi]);
+                    badArg = true;
+                }
             }
-            if (1 == argc)
+            if (1 == argc || badArg)
             {
                 debugPrint(L"USAGE:\n");
                 debugPrint(L"\t--zst <path to .zst file> [Required] Specifies a file path to .zst file to decompress. Could be absolute or relative path.\n");
@@ -1004,6 +1010,10 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
                 debugPrint(L"\t--ext-mem                 [Optional] Enables external heaps so the library doesn't create them.\n");
                 debugPrint(L"\t--prf-lvl <0, 1, 2>       [Optional] Chooses the level of profiling: 0 - overall bandwidth in GB/s, 1 - stage cost, 2 - internal pass cost.\n");
                 debugPrint(L"\t--idx-{min,max} <number>  [Optional] Chooses the {minimal, maximal} index of the frame to decompress in multi-frame .zst file. Both values are clamped to the number of available frames.\n");
+                if (badArg)
+                {
+                    return 1;
+                }
             }
             if (NULL == zstFilePathStorage)
             {
