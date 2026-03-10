@@ -334,13 +334,13 @@ static void zstdgpu_ReCreate_SRTs(zstdgpu_SRTs & srts, ID3D12Device *device, con
     ZSTDGPU_KERNEL(DecompressLiterals_LdsStoreCache32_32    ,   L"Decompress Literals (LDS Store Cache= 32 Dwords, Stream Count=32)")   \
     ZSTDGPU_KERNEL(DecompressLiterals_LdsStoreCache32_16    ,   L"Decompress Literals (LDS Store Cache= 32 Dwords, Stream Count=16)")   \
     ZSTDGPU_KERNEL(DecompressLiterals_LdsStoreCache32_8     ,   L"Decompress Literals (LDS Store Cache= 32 Dwords, Stream Count= 8)")   \
-    ZSTDGPU_KERNEL(DecompressSequences                      ,   L"Decompress Sequences")                                                \
     ZSTDGPU_KERNEL(DecompressSequences_LdsFseCache128       ,   L"Decompress Sequences (LDS FSE Cache, TG Size= 128)")                  \
     ZSTDGPU_KERNEL(DecompressSequences_LdsFseCache64        ,   L"Decompress Sequences (LDS FSE Cache, TG Size=  64)")                  \
     ZSTDGPU_KERNEL(DecompressSequences_LdsFseCache32        ,   L"Decompress Sequences (LDS FSE Cache, TG Size=  32)")                  \
     ZSTDGPU_KERNEL(DecompressSequences_Scalar128            ,   L"Decompress Sequences (Scalar, TG Size= 128)")                         \
     ZSTDGPU_KERNEL(DecompressSequences_Scalar64             ,   L"Decompress Sequences (Scalar, TG Size=  64)")                         \
     ZSTDGPU_KERNEL(DecompressSequences_Scalar32             ,   L"Decompress Sequences (Scalar, TG Size=  32)")                         \
+    ZSTDGPU_KERNEL(DecompressSequences                      ,   L"Decompress Sequences (Stream per Thread, TG Size = 32")               \
     ZSTDGPU_KERNEL(ExecuteSequences128                      ,   L"Execute Sequences 128")                                               \
     ZSTDGPU_KERNEL(ExecuteSequences64                       ,   L"Execute Sequences 64")                                                \
     ZSTDGPU_KERNEL(ExecuteSequences32                       ,   L"Execute Sequences 32")                                                \
