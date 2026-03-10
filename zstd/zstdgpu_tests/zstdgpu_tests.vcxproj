@@ -235,7 +235,6 @@
       <AdditionalOptions>/wd4244 /wd4267 /wd4334 %(AdditionalOptions)</AdditionalOptions>
     </ClCompile>
     <ClCompile Include="adapters.cpp" />
-    <ClCompile Include="buffers.cpp" />
     <ClCompile Include="gpuwork.cpp" />
     <ClCompile Include="main.cpp" />
     <ClCompile Include="libzstdgpu.cpp" />
@@ -254,13 +253,8 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="adapters.h" />
-    <ClInclude Include="buffers.h" />
     <ClInclude Include="gpuwork.h" />
     <ClInclude Include="libzstdgpu.h" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="internal_test_content.txt" />
-    <None Include="public_test_content.txt" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
@@ -269,10 +263,6 @@
     <Import Project="..\packages\Microsoft.Direct3D.D3D12.1.618.5\build\native\Microsoft.Direct3D.D3D12.targets" Condition="Exists('..\packages\Microsoft.Direct3D.D3D12.1.618.5\build\native\Microsoft.Direct3D.D3D12.targets')" />
     <Import Project="..\packages\Microsoft.Windows.ImplementationLibrary.1.0.260126.7\build\native\Microsoft.Windows.ImplementationLibrary.targets" Condition="Exists('..\packages\Microsoft.Windows.ImplementationLibrary.1.0.260126.7\build\native\Microsoft.Windows.ImplementationLibrary.targets')" />
   </ImportGroup>
-  <Target Name="CopyTextFiles" AfterTargets="Build">
-    <Copy SourceFiles="internal_test_content.txt" DestinationFolder="$(OutDir)" />
-    <Copy SourceFiles="public_test_content.txt" DestinationFolder="$(OutDir)" />
-  </Target>
   <Target Name="EnsureNuGetPackageBuildImports" BeforeTargets="PrepareForBuild">
     <PropertyGroup>
       <ErrorText>This project references NuGet package(s) that are missing on this computer. Use NuGet Package Restore to download them.  For more information, see http://go.microsoft.com/fwlink/?LinkID=322105. The missing file is {0}.</ErrorText>

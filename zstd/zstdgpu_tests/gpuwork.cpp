@@ -9,8 +9,6 @@
 
 #include "gpuwork.h"
 
-#include "buffers.h"
-
 #include <d3d12.h>
 #include <d3dx12.h>
 #include <windows.h>
@@ -44,26 +42,6 @@ GpuWork::GpuWork(ID3D12Device* device, const wchar_t* name)
     m_commandList->SetName(commandListName.c_str());
 
     m_commandList->Close();
-
-    check_hresult(m_device->CreateCommandList(
-        0,
-        queueDesc.Type,
-        m_commandAllocator.get(),
-        nullptr,
-        IID_PPV_ARGS(&m_startTimeStampCommandList)));
-    std::wstring startTimeCommandListName = name ? name : L" Start Time Command List";
-    m_startTimeStampCommandList->SetName(startTimeCommandListName.c_str());
-    m_startTimeStampCommandList->Close();
-
-    check_hresult(m_device->CreateCommandList(
-        0,
-        queueDesc.Type,
-        m_commandAllocator.get(),
-        nullptr,
-        IID_PPV_ARGS(&m_endTimeStampCommandList)));
-    std::wstring endTimeCommandListName = name ? name : L" End Time Command List";
-    m_endTimeStampCommandList->SetName(endTimeCommandListName.c_str());
-    m_endTimeStampCommandList->Close();
 
     m_commandAllocator->Reset();
 

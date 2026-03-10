@@ -25,26 +25,21 @@ using winrt::check_hresult;
 using winrt::com_ptr;
 using namespace Decompression;
 
-struct BatchInfo
-{
-    size_t TotalFiles = 0;
-    uint64_t TotalCompressedSize = 0;
-    uint64_t TotalUncompressedSize = 0;
-    uint64_t AverageDecompressionTimeUs = 0;
-};
-
 class GpuWork
 {
 public:
     GpuWork(ID3D12Device* device, const wchar_t* name);
+
+    HRESULT GetDeviceRemovedReason() const
+    {
+        return m_device->GetDeviceRemovedReason();
+    }
 
 protected:
     com_ptr<ID3D12Device5> m_device;
     com_ptr<ID3D12CommandQueue> m_commandQueue;
     com_ptr<ID3D12CommandAllocator> m_commandAllocator;
     com_ptr<ID3D12GraphicsCommandList4> m_commandList;
-    com_ptr<ID3D12GraphicsCommandList4> m_startTimeStampCommandList;
-    com_ptr<ID3D12GraphicsCommandList4> m_endTimeStampCommandList;
     com_ptr<ID3D12Fence> m_fence;
     wil::unique_event m_event;
     uint64_t m_nextFenceValue = 1;

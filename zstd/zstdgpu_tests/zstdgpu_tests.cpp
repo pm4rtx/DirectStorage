@@ -8,7 +8,6 @@
  */
 
 #include "adapters.h"
-#include "buffers.h"
 #include "gpuwork.h"
 
 #include <gtest/gtest.h>
@@ -44,11 +43,20 @@ static void SaveFile(std::filesystem::path path, const std::vector<uint8_t>& dat
 
 // Decompresses a single frame using the zstd educational decoder.
 // The educational decoder assumes single frame decompression.
+const size_t MAX_FRAME_SIZE = 1024 * 1024 * 100; // 100MB max frame size for sanity check to avoid OOM
 static std::vector<uint8_t> DecompressFrame(uint8_t* frameData, size_t frameDataSize)
 {
     auto uncompressedSize = ZSTD_get_decompressed_size(frameData, frameDataSize);
+    if (uncompressedSize == (size_t)-1)
+    {
+        // Uncompressed size is not available in the frame header, which may be the case for some frames. In this case,
+        // we use a default size to pre-allocate a buffer for decompressed data.
+        uncompressedSize = MAX_FRAME_SIZE;
+    }
     std::vector<uint8_t> decompressedData(uncompressedSize);
-    ZSTD_decompress(decompressedData.data(), uncompressedSize, frameData, frameDataSize);
+    auto actualUncompressedSize = ZSTD_decompress(decompressedData.data(), uncompressedSize, frameData, frameDataSize);
+    decompressedData.resize(actualUncompressedSize);
+
     return decompressedData;
 }
 
@@ -83,6 +91,7 @@ static OffsetsAndSizes ComputeOffsetsAndSizes(const std::vector<uint8_t>& aligne
         static_cast<uint32_t>(rawFrameDataSize));
 
     OffsetsAndSizes offsetsAndSizes;
+    offsetsAndSizes.UnCompressedFramesMemorySizeInBytes = 0;
     offsetsAndSizes.InputOffsets.resize(fbInfo.frameCount);
     offsetsAndSizes.OutputOffsets.resize(fbInfo.frameCount);
     std::vector<zstdgpu_FrameInfo> zstdFrameInfos(fbInfo.frameCount);
@@ -99,6 +108,18 @@ static OffsetsAndSizes ComputeOffsetsAndSizes(const std::vector<uint8_t>& aligne
     uint32_t vcnt = 0;
     for (uint32_t i = 0; i < fbInfo.frameCount; ++i)
     {
+        // Handle cases where the uncompressed size is not available from the frame header. In this case, we need to
+        // perform a CPU decompression of the frame. This is pretty expensive and currently the
+        // uncompressed data is thrown away after we get the size. In the future, we may want to optimize this by
+        // caching the decompressed data for frames without uncompressed size.
+        if (zstdFrameInfos[i].uncompSize == 0)
+        {
+            auto decompressedFrame = DecompressFrame(
+                const_cast<uint8_t*>(alignedFrameData.data()) + offsetsAndSizes.InputOffsets[i].offs,
+                offsetsAndSizes.InputOffsets[i].size);
+            zstdFrameInfos[i].uncompSize = decompressedFrame.size();
+        }
+
         offsetsAndSizes.OutputOffsets[i].offs = offs;
         offsetsAndSizes.OutputOffsets[i].size = (uint32_t)zstdFrameInfos[i].uncompSize;
 
@@ -108,24 +129,24 @@ static OffsetsAndSizes ComputeOffsetsAndSizes(const std::vector<uint8_t>& aligne
         vcnt += zstdFrameInfos[i].uncompSize != 0 ? 1 : 0;
     }
     offsetsAndSizes.UnCompressedFramesMemorySizeInBytes = offs;
-    EXPECT_EQ(fbInfo.frameCount, vcnt); // All frames should have valid uncompressed size.
 
     return offsetsAndSizes;
 }
 
 struct ZstFileInfo
 {
+    std::filesystem::path ZSTFilePath;
     size_t TotalFramesSizeBytes;
     OffsetsAndSizes FrameOffsetsAndSizes;
     std::vector<uint8_t> FrameDataAligned; // DWORD aligned buffer
     Frames ReferenceDecompressedFrames;
 };
 
-// Loads a .zst file and computes necessary information for testing, including frame offsets/sizes and reference
-// decompressed frames.
+// Loads a .zst file and computes necessary information for testing.
 ZstFileInfo LoadZstFile(std::filesystem::path zstFilePath)
 {
     ZstFileInfo info{};
+    info.ZSTFilePath = zstFilePath;
     info.FrameDataAligned = LoadFile(zstFilePath);
     info.TotalFramesSizeBytes = info.FrameDataAligned.size();
     info.FrameDataAligned.resize(DWORD_ALIGN(info.TotalFramesSizeBytes));
@@ -151,24 +172,99 @@ static void SaveDecompressedFrames(
     }
 }
 
-// Compares the decompressed frames with reference decompressed frames to validate correctness of GPU decompression
-// results.
-void ValidateUncompressedFrames(ZstFileInfo& fileInfo, Frames& decompressedFrames)
+// Logs formatted failure messages for a test.  Calling this method will cause the current
+// test to be reported as failed.
+void GTEST_LOG_FAILURE_MESSAGE(_Printf_format_string_ const char* const fmt, ...)
 {
-    EXPECT_EQ(decompressedFrames.size(), fileInfo.ReferenceDecompressedFrames.size());
+    va_list vaArgs;
+    va_start(vaArgs, fmt);
+    va_list vaArgsCopy;
+    va_copy(vaArgsCopy, vaArgs);
+    int iLen = std::vsnprintf(NULL, 0, fmt, vaArgsCopy);
+    if (iLen < 0)
+    {
+        va_end(vaArgsCopy);
+        va_end(vaArgs);
+        GTEST_NONFATAL_FAILURE_("Log message formatting error.");
+        return;
+    }
+    va_end(vaArgsCopy);
+
+    std::vector<char> zc(iLen + 1);
+    std::vsnprintf(zc.data(), zc.size(), fmt, vaArgs);
+    va_end(vaArgs);
+    std::string item = std::string(zc.data(), iLen);
+
+    GTEST_NONFATAL_FAILURE_(item.c_str());
+}
+
+bool ValidateUncompressedFrames(ZstFileInfo& fileInfo, Frames& decompressedFrames)
+{
+    bool validationPassed = true;
+    // The total number of frames decompressed must match the expected number
+    // of frames in the reference data.
+    if (decompressedFrames.size() != fileInfo.ReferenceDecompressedFrames.size())
+    {
+        GTEST_LOG_FAILURE_MESSAGE(
+            "Decompressed frame count mismatch found in '%s'. Expected: %zu, Actual: %zu",
+            fileInfo.ZSTFilePath.string().c_str(),
+            fileInfo.ReferenceDecompressedFrames.size(),
+            decompressedFrames.size());
+        return false; // avoid further processing which may cause out of bounds access
+    }
+
+    // The decompressed content must match the reference data.
     for (size_t frameIndex = 0; frameIndex < decompressedFrames.size(); ++frameIndex)
     {
         auto& actual = decompressedFrames[frameIndex];
         auto& expected = fileInfo.ReferenceDecompressedFrames[frameIndex];
-        EXPECT_TRUE(memcmp(actual.data(), expected.data(), expected.size()) == 0);
+        bool contentMatches = (memcmp(actual.data(), expected.data(), expected.size()) == 0);
+        if (!contentMatches)
+        {
+            GTEST_LOG_FAILURE_MESSAGE(
+                "Decompressed frame content mismatch found in '%s' at frame index %zu",
+                fileInfo.ZSTFilePath.string().c_str(),
+                frameIndex);
+            validationPassed = false;
+        }
     }
+
+    return validationPassed;
+}
+
+static std::filesystem::path FindFirstContentPath(bool isInternal)
+{
+    const char* drives[3] = {"C:\\", "D:\\", "E:\\"};
+    for (auto& drive : drives)
+    {
+        std::filesystem::path contentPath = std::filesystem::path(drive);
+        contentPath /= "DSTESTPC_CONTENT";
+        contentPath /= isInternal ? "internal" : "public";
+        if (std::filesystem::exists(contentPath))
+        {
+            return contentPath;
+        }
+    }
+    return {};
+}
+
+// File paths containing "skip" will be skipped in testing.
+// This allows test iterations to be easily disabled by renaming
+// the files or directories.
+static bool SkipFile(const std::filesystem::path& filePath)
+{
+    std::string pathStr = filePath.string();
+    std::transform(
+        pathStr.begin(),
+        pathStr.end(),
+        pathStr.begin(),
+        [](unsigned char c) { return std::tolower(c); });
+    return pathStr.find("skip") != std::string::npos;
 }
 
 // #define ENABLE_GPU_VALIDATION
-struct ZstdDecompressionTests : public ::testing::TestWithParam<std::string>
+struct ZstdDecompressionTests : public ::testing::Test
 {
-    std::unique_ptr<ZstdDecompressionWork> m_gpuWork;
-
     ZstdDecompressionTests()
     {
 #ifdef ENABLE_GPU_VALIDATION
@@ -183,140 +279,111 @@ struct ZstdDecompressionTests : public ::testing::TestWithParam<std::string>
             OutputDebugStringW(L"WARNING: D3D12 debug interface not available\n");
         }
 #endif // ENABLE_GPU_VALIDATION
-        auto adapter = FindDefaultAdapter();
-        m_gpuWork = std::make_unique<ZstdDecompressionWork>(adapter.Device.get(), L"ZstdDecompressionCorrectnessTests");
     }
 
-    Frames GpuDecompressFrames(std::vector<uint8_t>& compressedData, OffsetsAndSizes& offsetsAndSizes)
+    void ContentCorrectnessTest(bool isInternal)
     {
-        return m_gpuWork->Decompress(compressedData, offsetsAndSizes);
-    }
-};
-
-// Loads a list of .zst content paths to use for generating unique tests
-// that target a specific set of content. Each line in the file should be
-// a path to a .zst file to test with.
-static std::vector<std::string> LoadTestContentFileList(const std::string& path)
-{
-    std::ifstream in(path);
-    std::vector<std::string> files;
-    std::string line;
-    while (std::getline(in, line))
-    {
-        if (!line.empty())
-            files.push_back(line);
-    }
-    return files;
-}
-
-// Sanitizer: converts arbitrary strings into valid GoogleTest identifiers
-inline std::string SanitizeTestName(const std::string& name)
-{
-    std::string result = name;
-
-    // Replace invalid characters with '_'
-    std::replace_if(
-        result.begin(),
-        result.end(),
-        [](char c) { return !std::isalnum(static_cast<unsigned char>(c)); },
-        '_');
-
-    // Ensure it doesn't start with a digit
-    if (!result.empty() && std::isdigit(static_cast<unsigned char>(result[0])))
-    {
-        result = "_" + result;
-    }
-
-    // Avoid empty names
-    if (result.empty())
-    {
-        result = "Empty";
-    }
-
-    return result;
-}
-
-std::string ParamNameGenerator(
-    const testing::TestParamInfo<std::string>& info)
-{
-    return SanitizeTestName(info.param);
-}
-
-static bool file_exists_strict(const std::filesystem::path& p)
-{
-    return std::filesystem::exists(std::filesystem::absolute(p)) &&
-           std::filesystem::is_regular_file(std::filesystem::absolute(p));
-}
-
-// Constructs a valid file path for content specifed in the test content list files.
-// This assumes the content for internal and public tests are stored in known
-// root folder locations:
-// Example <root_drive_letter>:\DSTESTPC_CONTENT\internal
-// Example <root_drive_letter>:\DSTESTPC_CONTENT\public
-static std::filesystem::path MakeContentPath(const std::string& filename, bool isInternal)
-{
-    const char* drives[3] = {"C:\\", "D:\\", "E:\\"};
-    for (auto& drive : drives)
-    {
-        std::filesystem::path contentPath = std::filesystem::path(drive);
-        contentPath /= "DSTESTPC_CONTENT";
-        contentPath /= isInternal ? "internal" : "public";
-        contentPath /= filename;
-        if (file_exists_strict(contentPath))
+        auto contentPath = FindFirstContentPath(isInternal);
+        if (contentPath.empty())
         {
-            return contentPath;
+            GTEST_LOG_FAILURE_MESSAGE(
+                "Content folder not found. Searched drives C, D, and E for path 'DSTESTPC_CONTENT\\%s'.",
+                isInternal ? "internal" : "public");
+            return;
+        }
+
+        std::vector<std::filesystem::path> zstFiles;
+        for (auto& entry : std::filesystem::recursive_directory_iterator(contentPath))
+        {
+            if (entry.is_regular_file() && entry.path().extension() == ".zst" && !SkipFile(entry.path()))
+            {
+                zstFiles.push_back(entry.path());
+            }
+        }
+
+        if (zstFiles.empty())
+        {
+            GTEST_LOG_FAILURE_MESSAGE(
+                "No .zst files found in content folder '%s'.", contentPath.string().c_str());
+            return;
+        }
+
+        size_t currentFileIndex = 0;
+        size_t totalFiles = zstFiles.size();
+        size_t filesFailed = 0;
+        std::vector<std::filesystem::path> filePathsWithNoFrameData;
+
+        for (auto& zstfile : zstFiles)
+        {
+            std::unique_ptr<ZstdDecompressionWork> gpuWork = std::make_unique<ZstdDecompressionWork>(
+                FindDefaultAdapter().Device.get(),
+                L"ZstdDecompressionCorrectnessTests");
+
+            try
+            {
+                auto zstFileData = LoadZstFile(zstfile);
+                GTEST_LOG_(INFO) << "Testing file " << (currentFileIndex + 1) << " of " << totalFiles << ": ("
+                                 << zstFileData.ReferenceDecompressedFrames.size() << " frame(s)) '" << zstfile.string() << "', "
+                                 << zstFileData.TotalFramesSizeBytes << " bytes(compressed), "
+                                 << zstFileData.FrameOffsetsAndSizes.UnCompressedFramesMemorySizeInBytes << " bytes(uncompressed).";
+
+                currentFileIndex++;
+                if (!zstFileData.FrameOffsetsAndSizes.UnCompressedFramesMemorySizeInBytes)
+                {
+                    filePathsWithNoFrameData.push_back(zstfile);
+                    continue;
+                }
+
+                auto decompressedFrames =
+                    gpuWork->Decompress(zstFileData.FrameDataAligned, zstFileData.FrameOffsetsAndSizes);
+                if (!ValidateUncompressedFrames(zstFileData, decompressedFrames))
+                {
+                    filesFailed++;
+                }
+            }
+            catch (...)
+            {
+                HRESULT hr = gpuWork->GetDeviceRemovedReason();
+                if (FAILED(hr))
+                {
+                    GTEST_LOG_FAILURE_MESSAGE(
+                        "Device Removed detected while processing file '%s'",
+                        zstfile.string().c_str());
+                }
+                else
+                {
+                    GTEST_LOG_FAILURE_MESSAGE(
+                        "Exception occurred while processing file '%s'",
+                        zstfile.string().c_str());
+                }
+                filesFailed++;
+
+                GTEST_LOG_FAILURE_MESSAGE(
+                    "SUMMARY: %zu files failed so far with TDR or exceptions, and %zu files detected with no frame data out of a total of %zu files.",
+                    filesFailed,
+                    filePathsWithNoFrameData.size(),
+                    totalFiles);
+            }
+        }
+
+        if (filesFailed > 0)
+        {
+            GTEST_LOG_FAILURE_MESSAGE(
+                "Test completed with %zu files passed, %zu files failed with TDR or exceptions, and %zu files with no frame data out of a total of %zu files.",
+                (totalFiles - (filesFailed + filePathsWithNoFrameData.size())),
+                filesFailed,
+                filePathsWithNoFrameData.size(),
+                totalFiles);
         }
     }
-    return filename; // Content was not found in one of the generated paths, so return just the filename and let the
-                     // test handle the missing content case.
-}
-
-// Test suite for validating zstdgpu decompression using internal test content.
-struct ZstdDecompressionInternalContentTests : public ZstdDecompressionTests
-{
 };
 
-TEST_P(ZstdDecompressionInternalContentTests, CorrectnessTest)
+TEST_F(ZstdDecompressionTests, InternalContentCorrectnessTest)
 {
-    std::string filename = GetParam();
-    std::filesystem::path contentPath = MakeContentPath(filename, true);
-    if (!file_exists_strict(contentPath))
-    {
-        GTEST_SKIP() << "Test content `" << contentPath.string() << "` not found, skipping test.";
-    }
-
-    auto zstFileData = LoadZstFile(contentPath);
-    auto decompressedFrames = GpuDecompressFrames(zstFileData.FrameDataAligned, zstFileData.FrameOffsetsAndSizes);
-    ValidateUncompressedFrames(zstFileData, decompressedFrames);
+    ContentCorrectnessTest(true /* Use internal content folder location */);
 }
 
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    ZstdDecompressionInternalContentTests,
-    ::testing::ValuesIn(LoadTestContentFileList("internal_test_content.txt")),
-    ParamNameGenerator);
-
-// Test suite for validating zstdgpu decompression using public/shared test content.
-struct ZstdDecompressionPublicContentTests : public ZstdDecompressionTests
+TEST_F(ZstdDecompressionTests, PublicContentCorrectnessTest)
 {
-};
-
-TEST_P(ZstdDecompressionPublicContentTests, CorrectnessTest)
-{
-    std::string filename = GetParam();
-    std::filesystem::path contentPath = MakeContentPath(filename, false);
-    if (!file_exists_strict(contentPath))
-    {
-         GTEST_SKIP() << "Test content `" << contentPath.string() << "` not found, skipping test.";
-    }
-
-    auto zstFileData = LoadZstFile(contentPath);
-    auto decompressedFrames = GpuDecompressFrames(zstFileData.FrameDataAligned, zstFileData.FrameOffsetsAndSizes);
-    ValidateUncompressedFrames(zstFileData, decompressedFrames);
+    ContentCorrectnessTest(false /* Use public content folder location */);
 }
-
-INSTANTIATE_TEST_SUITE_P(
-    ,
-    ZstdDecompressionPublicContentTests,
-    ::testing::ValuesIn(LoadTestContentFileList("public_test_content.txt")),
-    ParamNameGenerator);
