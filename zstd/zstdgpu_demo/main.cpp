@@ -231,18 +231,18 @@ static void zstdgpu_Init_FinaliseSequenceOffsets_SRT(zstdgpu_FinaliseSequenceOff
 
 #define STRINGIZE(x) STRINGIZE2(x)
 #define STRINGIZE2(x) #x
-#define VALIDATE(name) \
+#define VALIDATE(name)  \
     do                  \
     {                   \
-    if (ZSTDGPU_ENUM_CONST(Validate_Success) != zstdgpu_ReferenceStore_Validate_##name) \
+        if (ZSTDGPU_ENUM_CONST(Validate_Success) != zstdgpu_ReferenceStore_Validate_##name) \
             debugPrint(L"[FAIL] Validation of '"#name"' failed in function: " __FUNCTION__ ", file: " __FILE__ ", line: " STRINGIZE(__LINE__) "\n");\
     }                   \
     while(0)
 
-#define VALIDATE_CND(cnd) \
+#define VALIDATE_CND(cnd)   \
     do                      \
     {                       \
-    if (!(cnd)) \
+        if (!(cnd))         \
             debugPrint(L"[FAIL] Validation of '"#cnd"' failed in function: " __FUNCTION__ ", file: " __FILE__ ", line: " STRINGIZE(__LINE__) "\n");\
     }                       \
     while(0)
