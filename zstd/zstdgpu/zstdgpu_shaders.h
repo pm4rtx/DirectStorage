@@ -1733,9 +1733,9 @@ static void zstdgpu_ShaderEntry_InitFseTable(ZSTDGPU_PARAM_INOUT(zstdgpu_InitFse
     //      and `groupshared` variable that are uniform across threadgroups -- remain uniform
     //      Otherwise, reading such variable (`PerGroupDwordN` for example) produces different results
     //      for different groups
-    const uint32_t frqDataCountAligned = ZSTDGPU_TG_MULTIPLE(frqDataCount, kzstdgpu_TgSizeX_InitFseTable);
+    const uint32_t frqDataCountAligned = zstdgpu_AlignUp(frqDataCount, kzstdgpu_TgSizeX_InitFseTable);
 
-    const uint32_t tblAllDataCountAligned = ZSTDGPU_TG_MULTIPLE(tblAllDataCount, kzstdgpu_TgSizeX_InitFseTable);
+    const uint32_t tblAllDataCountAligned = zstdgpu_AlignUp(tblAllDataCount, kzstdgpu_TgSizeX_InitFseTable);
 
     // initialize the index in the `table` array where symbols with negative frequencies are stored
     uint32_t negativeFrqSymStart = tblAllDataCount;

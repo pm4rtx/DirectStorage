@@ -79,7 +79,6 @@ static void debugPrint(const wchar_t *format, ...)
 
 static void loadFileAligned(void **outData, uint32_t *outDataSize, uint32_t *outBufferSize, uint32_t alignmentLog2, const wchar_t* fileName)
 {
-    const size_t alignmentMask = (1ull << alignmentLog2) - 1ull;
     size_t dataSize = 0;
     size_t bufferSize = 0;
 
@@ -93,7 +92,7 @@ static void loadFileAligned(void **outData, uint32_t *outDataSize, uint32_t *out
         fseek(file, 0, SEEK_SET);
         if (-1 != dataSize)
         {
-            bufferSize = (dataSize + alignmentMask) & ~alignmentMask;
+            bufferSize = zstdgpu_AlignUp((uint32_t)dataSize, 1u << alignmentLog2);
             data = malloc(bufferSize);
             ZSTDGPU_ASSERT(NULL != data);
             if (NULL != data)
@@ -1045,7 +1044,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
             zstdOutFrameRefs[i].size = (uint32_t)zstdFrameInfo[i].uncompSize;
 
             offs += zstdOutFrameRefs[i].size;
-            offs =  ZSTDGPU_ALIGN(offs, 256);
+            offs =  zstdgpu_AlignUp(offs, 256);
 
             vcnt += zstdFrameInfo[i].uncompSize != 0 ? 1 : 0;
         }
@@ -1190,7 +1189,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
     void* defaultUploadCallbackUserData[2];
     if (testSourceInGpuMemory > 0)
     {
-        zstdCompressedFramesMemorySizeInBytes = ZSTDGPU_TG_MULTIPLE(zstdDataSize, 4u);
+        zstdCompressedFramesMemorySizeInBytes = zstdgpu_AlignUp(zstdDataSize, 4u);
 
         d3d12aid_MappedBuffer_Create(&zstdCompressedFramesMemory, device, 1u, zstdCompressedFramesMemorySizeInBytes, D3D12_HEAP_TYPE_UPLOAD);
         d3d12aid_MappedBuffer_Create(&zstdCompressedFramesRefs, device, 1u, zstdFramesRefsSizeInBytes, D3D12_HEAP_TYPE_UPLOAD);
