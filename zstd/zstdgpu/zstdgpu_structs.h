@@ -402,14 +402,6 @@ static const uitn32_t kzstdgpu_TgSizeX_DecompressLiterals = 64;
 static const uint32_t kzstdgpu_TgSizeX_DecompressLiterals = 32;
 #endif
 
-#if defined(_GAMING_XBOX_SCARLETT) || defined(__XBOX_SCARLETT)
-#   define kzstdgpu_TgSizeX_DecompressSequences 1
-#elif defined(_GAMING_XBOX_XBOXONE) || defined(__XBOX_ONE)
-#   define kzstdgpu_TgSizeX_DecompressSequences 64
-#else
-#   define kzstdgpu_TgSizeX_DecompressSequences 4
-#endif
-
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
 static const uint32_t kzstdgpu_TgSizeX_FinaliseSequenceOffsets = 64;
 #else

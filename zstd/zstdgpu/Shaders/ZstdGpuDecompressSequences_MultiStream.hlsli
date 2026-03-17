@@ -1,5 +1,5 @@
 /**
- * ZstdGpuDecompressSequences.hlsl
+ * ZstdGpuDecompressSequences_MultiStream.hlsli
  *
  * A compute shader that decompresses FSE-compressed Sequences.
  * The shader maps one stream of FSE-compressed sequences to a single thread.
@@ -19,10 +19,8 @@
 #define __XBOX_ENABLE_WAVE32 1
 #endif
 
-//#define USE_LDS_OUT_CACHE 1
-
-#ifdef USE_LDS_OUT_CACHE
-#define SEQ_CACHE_LEN 128
+#ifndef kzstdgpu_DecompressSequences_StreamsPerTG
+#   error 'kzstdgpu_DecompressSequences_StreamsPerTG' must be defined before including this '.hlsli'
 #endif
 
 #include "../zstdgpu_shaders.h"
@@ -38,19 +36,8 @@ ConstantBuffer<Consts> Constants : register(b0);
 ZSTDGPU_DECOMPRESS_SEQUENCES_SRT()
 #include "../zstdgpu_srt_decl_undef.h"
 
-#if defined(USE_LDS_OUT_CACHE)
-groupshared uint32_t Lds[kzstdgpu_DecompressSequences_LdsOutCache_LdsSize];
-#define ZSTDGPU_LDS Lds
-#include "../zstdgpu_lds_hlsl.h"
-#endif
-
 [RootSignature("DescriptorTable(SRV(t0, numDescriptors=6), UAV(u0, numDescriptors=7)), RootConstants(b0, num32BitConstants=1)")]
-#ifdef USE_LDS_OUT_CACHE
-#define NUM_THREADS 32
-[numthreads(NUM_THREADS, 1, 1)]
-#else
-[numthreads(kzstdgpu_TgSizeX_DecompressSequences, 1, 1)]
-#endif
+[numthreads(kzstdgpu_DecompressSequences_StreamsPerTG, 1, 1)]
 void main(uint32_t2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {
 #if defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
@@ -59,18 +46,11 @@ void main(uint32_t2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
     const uint32_t groupId = Constants.tgOffset + groupId2.y * 65535 + groupId2.x;
 #endif
 
-#ifndef USE_LDS_OUT_CACHE
-    i += groupId * kzstdgpu_TgSizeX_DecompressSequences;
-#endif
     zstdgpu_DecompressSequences_SRT srt;
 
     #include "../zstdgpu_srt_decl_copy.h"
     ZSTDGPU_DECOMPRESS_SEQUENCES_SRT()
     #include "../zstdgpu_srt_decl_undef.h"
 
-#if defined(USE_LDS_OUT_CACHE)
-    zstdgpu_ShaderEntry_DecompressSequences_LdsOutCache(srt, groupId, i);
-#else
-    zstdgpu_ShaderEntry_DecompressSequences(srt, i);
-#endif
+    zstdgpu_ShaderEntry_DecompressSequences_MultiStream(srt, groupId, i, kzstdgpu_DecompressSequences_StreamsPerTG);
 }

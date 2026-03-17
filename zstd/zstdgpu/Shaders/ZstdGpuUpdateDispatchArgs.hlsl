@@ -18,6 +18,10 @@
 
 #include "../zstdgpu_structs.h"
 
+#ifndef kzstdgpu_DecompressSequences_StreamsPerTG
+#define kzstdgpu_DecompressSequences_StreamsPerTG 8
+#endif
+
 RWStructuredBuffer<uint32_t> ZstdCounters : register(u0);
 
 [RootSignature("UAV(u0)")]
@@ -36,5 +40,5 @@ void main()
 
     ZstdCounters[kzstdgpu_CounterIndex_GroupCompressedLiteralsGroups] = ZSTDGPU_TG_COUNT(ZstdCounters[kzstdgpu_CounterIndex_HUF_Streams], 32);
 
-    ZstdCounters[kzstdgpu_CounterIndex_DecompressSequencesGroups] = ZSTDGPU_TG_COUNT(ZstdCounters[kzstdgpu_CounterIndex_Seq_Streams], kzstdgpu_TgSizeX_DecompressSequences);
+    ZstdCounters[kzstdgpu_CounterIndex_DecompressSequencesGroups] = ZSTDGPU_TG_COUNT(ZstdCounters[kzstdgpu_CounterIndex_Seq_Streams], kzstdgpu_DecompressSequences_StreamsPerTG);
 }

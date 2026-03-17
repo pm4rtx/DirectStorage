@@ -3543,9 +3543,9 @@ static void zstdgpu_ReadExtraBitsAndUpdateState(ZSTDGPU_PARAM_INOUT(zstdgpu_Back
     stateOffs = zstdgpu_FseElem_NState(fseElemOffs) + restOffs;
 }
 
-static void zstdgpu_ShaderEntry_DecompressSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_DecompressSequences_SRT) srt, uint32_t threadId)
+static void zstdgpu_ShaderEntry_DecompressSequences_MultiStream(ZSTDGPU_PARAM_INOUT(zstdgpu_DecompressSequences_SRT) srt, uint32_t groupId, uint32_t threadId, uint32_t streamsPerGroup)
 {
-    const uint32_t seqStreamIdx = threadId;
+    const uint32_t seqStreamIdx = groupId * streamsPerGroup + threadId;
     const uint32_t seqStreamCnt = srt.inCounters[kzstdgpu_CounterIndex_Seq_Streams];
     const uint32_t cmpBlockCnt = srt.inCounters[kzstdgpu_CounterIndex_Blocks_CMP];
 
@@ -3640,13 +3640,13 @@ static void zstdgpu_ShaderEntry_DecompressSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_
 }
 
 // LDS partitioning macro lists for sequence decompression with in-LDS FSE caching
-#ifndef ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE
-#define ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE 1
-#define ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE_UNDEF 1
+#ifndef kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache
+#define kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache 1
+#define kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache_UNDEF 1
 #endif
 
-#if !ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE
-#define ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_FSE_CACHE_LDS(base, size)      \
+#if !kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache
+#define ZSTDGPU_DECOMPRESS_SEQUENCES_SINGLE_STREAM_LDS_FSE_CACHE_LDS(base, size) \
     ZSTDGPU_LDS_SIZE(size)                                              \
     ZSTDGPU_LDS_BASE(base)                                              \
     ZSTDGPU_LDS_REGION(FsePackedLLen   , kzstdgpu_FseElemMaxCount_LLen) \
@@ -3654,13 +3654,13 @@ static void zstdgpu_ShaderEntry_DecompressSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_
     ZSTDGPU_LDS_REGION(FsePackedOffs   , kzstdgpu_FseElemMaxCount_Offs)
 
 #include "zstdgpu_lds_decl_size.h"
-ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_FSE_CACHE_LDS(0, DecompressSequences_LdsFseCache);
+ZSTDGPU_DECOMPRESS_SEQUENCES_SINGLE_STREAM_LDS_FSE_CACHE_LDS(0, DecompressSequences_SingleStream_LdsFseCache);
 #include "zstdgpu_lds_decl_undef.h"
 #endif
 
-static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_INOUT(zstdgpu_DecompressSequences_SRT) srt, uint32_t groupId, uint32_t threadId, uint32_t tgSize)
+static void zstdgpu_ShaderEntry_DecompressSequences_SingleStream(ZSTDGPU_PARAM_INOUT(zstdgpu_DecompressSequences_SRT) srt, uint32_t groupId, uint32_t threadId, uint32_t tgSize)
 {
-#if ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE
+#if kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache
     ZSTDGPU_UNUSED(threadId);
     ZSTDGPU_UNUSED(tgSize);
 #endif
@@ -3688,9 +3688,9 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_IN
 
     const zstdgpu_OffsetAndSize dst = zstdgpu_GetSequenceStartAndCount(srt, seqStreamIdx, seqStreamCnt);
 
-#if !ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE
+#if !kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache
     #include "zstdgpu_lds_decl_base.h"
-    ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_FSE_CACHE_LDS(0, DecompressSequences_LdsFseCache);
+    ZSTDGPU_DECOMPRESS_SEQUENCES_SINGLE_STREAM_LDS_FSE_CACHE_LDS(0, DecompressSequences_SingleStream_LdsFseCache);
     #include "zstdgpu_lds_decl_undef.h"
 
     #define ZSTDGPU_PRELOAD_FSE_INTO_LDS(name)                                                                  \
@@ -3742,7 +3742,7 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_IN
     const uint32_t outputEnd = dst.offs + dst.size;
     for (;;)
     {
-        #if !ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE
+        #if !kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache
             const uint32_t packedFseElemLLen = zstdgpu_LdsLoadU32(GS_FsePackedLLen + stateLLen);
             const uint32_t packedFseElemOffs = zstdgpu_LdsLoadU32(GS_FsePackedOffs + stateOffs);
             const uint32_t packedFseElemMLen = zstdgpu_LdsLoadU32(GS_FsePackedMLen + stateMLen);
@@ -3784,35 +3784,49 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(ZSTDGPU_PARAM_IN
     srt.inoutPerSeqStreamFinalOffset3[seqStreamIdx] = offset3;
 }
 
-#ifdef ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE_UNDEF
-#undef ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE_UNDEF
-#undef ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE
+#ifdef kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache_UNDEF
+#undef kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache_UNDEF
+#undef kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache
 #endif
 
-// LDS partitioning macro lists for sequence decompression with in-LDS caching
+// LDS partitioning macro lists for sequence decompression with in-LDS output caching
+// Cache stores kzstdgpu_DecompressSequences_LdsStoreCache_DwCount triplets (llen, mlen, offs) per stream, laid out as 3 SoA regions.
+// Bank conflicts are avoided via index swizzling
 #define ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_OUT_CACHE_LDS(base, size)      \
     ZSTDGPU_LDS_SIZE(size)                                              \
     ZSTDGPU_LDS_BASE(base)                                              \
-    ZSTDGPU_LDS_REGION(OutputCache,     kzstdgpu_TgSizeX_DecompressSequences * (SEQ_CACHE_LEN + 1) * 3)
+    ZSTDGPU_LDS_REGION(LLenCache, kzstdgpu_DecompressSequences_StreamsPerTG * kzstdgpu_DecompressSequences_LdsStoreCache_DwCount) \
+    ZSTDGPU_LDS_REGION(MLenCache, kzstdgpu_DecompressSequences_StreamsPerTG * kzstdgpu_DecompressSequences_LdsStoreCache_DwCount) \
+    ZSTDGPU_LDS_REGION(OffsCache, kzstdgpu_DecompressSequences_StreamsPerTG * kzstdgpu_DecompressSequences_LdsStoreCache_DwCount)
 
-#ifndef SEQ_CACHE_LEN
-#define SEQ_CACHE_LEN 128
-#define SEQ_CACHE_LEN_UNDEF 1
+#ifndef kzstdgpu_DecompressSequences_LdsStoreCache_DwCount
+#define kzstdgpu_DecompressSequences_LdsStoreCache_DwCount 64
+#define kzstdgpu_DecompressSequences_LdsStoreCache_DwCount_UNDEF 1
+#endif
+
+#ifndef kzstdgpu_DecompressSequences_StreamsPerTG
+#define kzstdgpu_DecompressSequences_StreamsPerTG 8
+#define kzstdgpu_DecompressSequences_StreamsPerTG_UNDEF 1
 #endif
 
 #include "zstdgpu_lds_decl_size.h"
-ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_OUT_CACHE_LDS(0, DecompressSequences_LdsOutCache);
+ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_OUT_CACHE_LDS(0, DecompressSequences_MultiStream_LdsOutCache);
 #include "zstdgpu_lds_decl_undef.h"
 
-static void zstdgpu_ShaderEntry_DecompressSequences_LdsOutCache(ZSTDGPU_PARAM_INOUT(zstdgpu_DecompressSequences_SRT) srt, uint32_t groupId, uint32_t threadId)
+static void zstdgpu_ShaderEntry_DecompressSequences_MultiStream_LdsOutCache(ZSTDGPU_PARAM_INOUT(zstdgpu_DecompressSequences_SRT) srt,
+                                                                uint32_t groupId,
+                                                                uint32_t threadId,
+                                                                uint32_t tgSize,
+                                                                uint32_t streamsPerGroup,
+                                                                uint32_t cacheDwordsPerStream)
 {
-    const uint32_t globalSeqBase = groupId * kzstdgpu_TgSizeX_DecompressSequences;
-    const uint32_t globalSeqEnd = zstdgpu_MinU32(globalSeqBase + kzstdgpu_TgSizeX_DecompressSequences, srt.inCounters[kzstdgpu_CounterIndex_Seq_Streams]);
-    const uint32_t groupSeqCount = globalSeqEnd - globalSeqBase;
-
-    const uint32_t seqIdPerThread = zstdgpu_MinU32(threadId, groupSeqCount - 1u);
-    const uint32_t seqStreamIdx = groupId * kzstdgpu_TgSizeX_DecompressSequences + seqIdPerThread;
     const uint32_t seqStreamCnt = srt.inCounters[kzstdgpu_CounterIndex_Seq_Streams];
+    const uint32_t seqStreamBeg = groupId * streamsPerGroup;
+
+    const uint32_t seqStreamCntInGroup = zstdgpu_MinU32(seqStreamCnt - seqStreamBeg, streamsPerGroup);
+    const uint32_t seqStreamIdxInGroup = zstdgpu_MinU32(threadId, seqStreamCntInGroup - 1u);
+    const uint32_t seqStreamIdx = seqStreamBeg + seqStreamIdxInGroup;
+
     const uint32_t cmpBlockCnt = srt.inCounters[kzstdgpu_CounterIndex_Blocks_CMP];
 
     const zstdgpu_OffsetAndSize seqRefDst = zstdgpu_GetSequenceStartAndCount(srt, seqStreamIdx, seqStreamCnt);
@@ -3822,23 +3836,12 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsOutCache(ZSTDGPU_PARAM_IN
     uint32_t offset1, offset2, offset3;
     zstdgpu_SequenceOffsets_Init(offset1, offset2, offset3);
 
-    #ifndef NUM_THREADS
-    #define NUM_THREADS 32
-    #else
-    #error `NUM_THREADS` must not be defined.
-    #endif
-
-    #ifndef SEQ_CACHE_LEN
-    #define SEQ_CACHE_LEN 128
-    #endif
-
     #include "zstdgpu_lds_decl_base.h"
-    ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_OUT_CACHE_LDS(0, DecompressSequences_LdsOutCache);
+    ZSTDGPU_DECOMPRESS_SEQUENCES_LDS_OUT_CACHE_LDS(0, DecompressSequences_MultiStream_LdsOutCache);
     #include "zstdgpu_lds_decl_undef.h"
 
-    const uint32_t seqLdsLLenStart = 0;
-    const uint32_t seqLdsMLenStart = kzstdgpu_TgSizeX_DecompressSequences * (SEQ_CACHE_LEN + 1);
-    const uint32_t seqLdsOffsStart = kzstdgpu_TgSizeX_DecompressSequences * (SEQ_CACHE_LEN + 1) * 2;
+    const uint32_t kStoreCacheBankCount = 32;
+    const uint32_t kStoreCacheBankMask = kStoreCacheBankCount - 1u;
 
     #ifdef ZSTDGPU_BACKWARD_BITBUF
     #   error `ZSTDGPU_BACKWARD_BITBUF` must not be defined.
@@ -3852,7 +3855,6 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsOutCache(ZSTDGPU_PARAM_IN
 
     // NOTE: the final block size will be computed as SUM(literalSize, totalMLen)
     const uint32_t literalSize = srt.inoutBlockSizePrefix[seqRef.blockId];
-    uint32_t totalSize = 0;
     uint32_t totalMLen = 0;
 
     const uint32_t startLLen = zstdgpu_ComputeFseDataStartFromFseIndexLLen(seqRef.fseLLen, cmpBlockCnt);
@@ -3870,24 +3872,33 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsOutCache(ZSTDGPU_PARAM_IN
         uint32_t stateOffs = ZSTDGPU_BACKWARD_BITBUF(GetNoRefill)(bitBuffer, initBitcntOffs);
         uint32_t stateMLen = ZSTDGPU_BACKWARD_BITBUF(GetNoRefill)(bitBuffer, initBitcntMLen);
 
-        const uint32_t sequenceCountMax = WaveActiveMax(seqRefDst.size);
-
         const uint32_t seqMemStart = seqRefDst.offs;
-        const uint32_t seqLdsStart = seqIdPerThread * (SEQ_CACHE_LEN + 1);
+        const uint32_t storeCacheThreadOffset = seqStreamIdxInGroup * cacheDwordsPerStream;
 
-        for (uint32_t i = 0; i < sequenceCountMax; ++i)
+        const uint32_t laneCnt = zstdgpu_MinU32(WaveGetLaneCount(), tgSize);
+        const uint32_t streamBeg = WaveReadLaneFirst(threadId);
+
+        uint32_t seqIdx = seqRefDst.offs;
+
+        // WARN(pamartis): The condition here is important even if size and offset are correct to make sure no work is done by
+        // threads that get replicated data
+        const uint32_t seqIdxEnd = seqRefDst.offs + ((threadId < seqStreamCntInGroup) ? seqRefDst.size : 0);
+
+        do
         {
-            uint32_t fseElemLLen = 0, fseElemOffs = 0, fseElemMLen = 0;
+            const uint32_t seqIdxBatchBeg = seqIdx;
+            const uint32_t seqIdxBatchEnd = zstdgpu_MinU32(seqIdx + cacheDwordsPerStream, seqIdxEnd);
 
-            if (threadId < groupSeqCount && i < seqRefDst.size)
+            // Decode phase: each active thread decodes up to cacheDwordsPerStream sequences into its LDS cache
+            for (; seqIdx < seqIdxBatchEnd; )
             {
                 stateLLen += startLLen;
                 stateOffs += startOffs;
                 stateMLen += startMLen;
 
-                fseElemLLen = srt.inFseElems[stateLLen];
-                fseElemOffs = srt.inFseElems[stateOffs];
-                fseElemMLen = srt.inFseElems[stateMLen];
+                const uint32_t fseElemLLen = srt.inFseElems[stateLLen];
+                const uint32_t fseElemOffs = srt.inFseElems[stateOffs];
+                const uint32_t fseElemMLen = srt.inFseElems[stateMLen];
 
                 uint32_t llen = 0, offs = 0, mlen = 0;
                 zstdgpu_ReadSeqBitsAndDecompress(
@@ -3899,102 +3910,51 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsOutCache(ZSTDGPU_PARAM_IN
                 );
                 offs = zstdgpu_SequenceOffsets_Update2(offset1, offset2, offset3, offs, llen);
 
-                const uint32_t seqLdsCurrIndex = i & (SEQ_CACHE_LEN - 1u);
-
-                zstdgpu_LdsStoreU32((GS_OutputCache + seqLdsLLenStart) + seqLdsStart + seqLdsCurrIndex, llen);
-                zstdgpu_LdsStoreU32((GS_OutputCache + seqLdsMLenStart) + seqLdsStart + seqLdsCurrIndex, mlen);
-                zstdgpu_LdsStoreU32((GS_OutputCache + seqLdsOffsStart) + seqLdsStart + seqLdsCurrIndex, offs);
-
-                // TODO: computing sum might be cheaper in a cross-wave fashion (depends on WaveActiveSum implementation + complexity of cross-group reduction)
                 totalMLen += mlen;
-                totalSize += llen + mlen;
-            }
 
-            const bool seqLdsCacheFull = (i & (SEQ_CACHE_LEN - 1u)) == (SEQ_CACHE_LEN - 1u) && (i < seqRefDst.size);
+                const uint32_t seqIdxInBatch = seqIdx - seqIdxBatchBeg;
 
-            if (WaveActiveAnyTrue(seqLdsCacheFull))
-            {
-                // NOTE(pamartis): we check for `ldsElemIndex == 0` because this an indicator that
-                // LDS cache for a particular sequence is full, so we need to start offloading it
-                // to memory
-                const uint32_t seqMask = seqLdsCacheFull ? (1u << seqIdPerThread) : 0;
-                uint32_t seqWaveMask = WaveActiveBitOr(seqMask);
-                while(seqWaveMask)
+                //
+                const uint32_t seqIdxInCache = (seqIdxInBatch & ~kStoreCacheBankMask) + ((seqIdxInBatch + threadId) & kStoreCacheBankMask);
+                zstdgpu_LdsStoreU32(GS_LLenCache + storeCacheThreadOffset + seqIdxInCache, llen);
+                zstdgpu_LdsStoreU32(GS_MLenCache + storeCacheThreadOffset + seqIdxInCache, mlen);
+                zstdgpu_LdsStoreU32(GS_OffsCache + storeCacheThreadOffset + seqIdxInCache, offs);
+
+                if (++seqIdx < seqIdxEnd)
                 {
-                    const uint32_t offloadSeqId = zstdgpu_FindFirstBitHiU32(seqWaveMask);
-
-                    const uint32_t seqElemStart = WaveReadLaneAt(i, offloadSeqId) & ~(SEQ_CACHE_LEN - 1u);
-                    const uint32_t seqMemStoreBase = (WaveReadLaneAt(seqMemStart, offloadSeqId) + seqElemStart);
-
-                    const uint32_t seqLdsStartUniform = WaveReadLaneAt(seqLdsStart, offloadSeqId);
-                    const uint32_t seqLLenLdsStartUniform = seqLdsStartUniform + seqLdsLLenStart;
-                    const uint32_t seqMLenLdsStartUniform = seqLdsStartUniform + seqLdsMLenStart;
-                    const uint32_t seqOffsLdsStartUniform = seqLdsStartUniform + seqLdsOffsStart;
-
-                    ZSTDGPU_FOR_WORK_ITEMS(seqLdsElemIndex, SEQ_CACHE_LEN, threadId, NUM_THREADS)
-                    {
-                        const uint32_t seqMemStoreIndex = seqLdsElemIndex + seqMemStoreBase;
-
-                        const uint32_t llen = zstdgpu_LdsLoadU32(GS_OutputCache + seqLLenLdsStartUniform + seqLdsElemIndex);
-                        const uint32_t mlen = zstdgpu_LdsLoadU32(GS_OutputCache + seqMLenLdsStartUniform + seqLdsElemIndex);
-                        const uint32_t offs = zstdgpu_LdsLoadU32(GS_OutputCache + seqOffsLdsStartUniform + seqLdsElemIndex);
-
-                        // TODO: we need SoA streams here.
-                        srt.inoutDecompressedSequenceLLen[seqMemStoreIndex] = llen;
-                        srt.inoutDecompressedSequenceMLen[seqMemStoreIndex] = mlen;
-                        srt.inoutDecompressedSequenceOffs[seqMemStoreIndex] = offs;
-                    }
-                    seqWaveMask &= ~(1u << offloadSeqId);
+                    zstdgpu_ReadExtraBitsAndUpdateState(bitBuffer, fseElemLLen, fseElemOffs, fseElemMLen, stateLLen, stateOffs, stateMLen);
                 }
             }
 
-            if (threadId < groupSeqCount && (i + 1u < seqRefDst.size))
+            // Cooperative flush phase: all threads flush each stream's LDS cache to UAV memory
+            uint32_t i = streamBeg;
+            const uint32_t streamEnd = zstdgpu_MinU32(i + laneCnt, seqStreamCntInGroup);
+
+            ZSTDGPU_LOOP for (; i < streamEnd; ++i)
             {
-                zstdgpu_ReadExtraBitsAndUpdateState(bitBuffer, fseElemLLen, fseElemOffs, fseElemMLen, stateLLen, stateOffs, stateMLen);
-            }
-        }
+                const uint32_t seqCntInBatch = WaveReadLaneAt(seqIdxBatchEnd - seqIdxBatchBeg, i - streamBeg);
+                const uint32_t dstSeqIdx = WaveReadLaneAt(seqIdxBatchBeg, i - streamBeg);
 
-        const bool seqLdsCacheTail = (seqRefDst.size & (SEQ_CACHE_LEN - 1u)) != 0 && threadId < groupSeqCount;
-
-        if (WaveActiveAnyTrue(seqLdsCacheTail))
-        {
-            const uint32_t seqMask = seqLdsCacheTail ? (1u << seqIdPerThread) : 0;
-            uint32_t seqWaveMask = WaveActiveBitOr(seqMask);
-            while(seqWaveMask)
-            {
-                const uint32_t offloadSeqId = zstdgpu_FindFirstBitHiU32(seqWaveMask);
-
-                const uint32_t seqElemCount = WaveReadLaneAt(seqRefDst.size, offloadSeqId);
-                const uint32_t seqElemTailCount = seqElemCount & (SEQ_CACHE_LEN - 1u);
-
-                const uint32_t seqElemStart = (seqElemCount - 1u) & ~(SEQ_CACHE_LEN - 1u);
-                const uint32_t seqMemStoreBase = (WaveReadLaneAt(seqMemStart, offloadSeqId) + seqElemStart);
-
-                const uint32_t seqLdsStartUniform = WaveReadLaneAt(seqLdsStart, offloadSeqId);
-                const uint32_t seqLLenLdsStartUniform = seqLdsStartUniform + seqLdsLLenStart;
-                const uint32_t seqMLenLdsStartUniform = seqLdsStartUniform + seqLdsMLenStart;
-                const uint32_t seqOffsLdsStartUniform = seqLdsStartUniform + seqLdsOffsStart;
-
-                ZSTDGPU_FOR_WORK_ITEMS(seqLdsElemIndex, seqElemTailCount, threadId, NUM_THREADS)
+                ZSTDGPU_FOR_WORK_ITEMS(seqIdxToStore, seqCntInBatch, WaveGetLaneIndex(), laneCnt)
                 {
-                    const uint32_t seqMemStoreIndex = seqLdsElemIndex + seqMemStoreBase;
+                    // Inverse swizzle to read back correct data
+                    const uint32_t seqIdxInCache = (seqIdxToStore & ~kStoreCacheBankMask) + ((seqIdxToStore + i) & kStoreCacheBankMask);
+                    const uint32_t srcOffset = ZSTDGPU_INTENDED_MUL32(i * cacheDwordsPerStream) + seqIdxInCache;
 
-                    const uint32_t llen = zstdgpu_LdsLoadU32(GS_OutputCache + seqLLenLdsStartUniform + seqLdsElemIndex);
-                    const uint32_t mlen = zstdgpu_LdsLoadU32(GS_OutputCache + seqMLenLdsStartUniform + seqLdsElemIndex);
-                    const uint32_t offs = zstdgpu_LdsLoadU32(GS_OutputCache + seqOffsLdsStartUniform + seqLdsElemIndex);
+                    const uint32_t llen = zstdgpu_LdsLoadU32(GS_LLenCache + srcOffset);
+                    const uint32_t mlen = zstdgpu_LdsLoadU32(GS_MLenCache + srcOffset);
+                    const uint32_t offs = zstdgpu_LdsLoadU32(GS_OffsCache + srcOffset);
 
-                    srt.inoutDecompressedSequenceLLen[seqMemStoreIndex] = llen;
-                    srt.inoutDecompressedSequenceMLen[seqMemStoreIndex] = mlen;
-                    srt.inoutDecompressedSequenceOffs[seqMemStoreIndex] = offs;
+                    srt.inoutDecompressedSequenceLLen[dstSeqIdx + seqIdxToStore] = llen;
+                    srt.inoutDecompressedSequenceMLen[dstSeqIdx + seqIdxToStore] = mlen;
+                    srt.inoutDecompressedSequenceOffs[dstSeqIdx + seqIdxToStore] = offs;
                 }
-                seqWaveMask &= ~(1u << offloadSeqId);
             }
         }
-        #undef SEQ_CACHE_LEN
-        #undef NUM_THREADS
+        while (WaveActiveAnyTrue(seqIdx < seqIdxEnd));
     }
 
-    if (threadId < groupSeqCount)
+    if (threadId < seqStreamCntInGroup)
     {
         // NOTE(pamartis): update block size adding `totalMLen` bytes on top
         srt.inoutBlockSizePrefix[seqRef.blockId] = totalMLen + literalSize;
@@ -4007,6 +3967,16 @@ static void zstdgpu_ShaderEntry_DecompressSequences_LdsOutCache(ZSTDGPU_PARAM_IN
     #undef ZSTDGPU_BACKWARD_BITBUF
     //ZSTDGPU_ASSERT(bitBuffer.hadlastrefill && bitBuffer.bitcnt == 0);
 }
+
+#ifdef kzstdgpu_DecompressSequences_LdsStoreCache_DwCount_UNDEF
+#undef kzstdgpu_DecompressSequences_LdsStoreCache_DwCount_UNDEF
+#undef kzstdgpu_DecompressSequences_LdsStoreCache_DwCount
+#endif
+
+#ifdef kzstdgpu_DecompressSequences_StreamsPerTG_UNDEF
+#undef kzstdgpu_DecompressSequences_StreamsPerTG_UNDEF
+#undef kzstdgpu_DecompressSequences_StreamsPerTG
+#endif
 
 static void zstdgpu_ShaderEntry_FinaliseSequenceOffsets(ZSTDGPU_PARAM_INOUT(zstdgpu_FinaliseSequenceOffsets_SRT) srt, uint32_t threadId)
 {
