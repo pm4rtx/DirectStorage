@@ -1,8 +1,8 @@
 /**
- * ZstdGpuDecompressSequences_LdsFseCache.hlsli
+ * ZstdGpuDecompressSequences_SingleStream.hlsli
  *
- * A compute shader that decompresses FSE-compressed sequences.
- * It preloads FSE tables into LDS for faster access. The threadgroup processes only one sequence.
+ * A compute shader that decompresses single FSE-compressed sequences stream per TG by preloading
+ * FSE tables into LDS and then sampling FSE tables from LDS for faster access comparing to L0/Scalar cache.
  *
  * Because of this, this shader must be compiled as a small threadgroup as possible.
  *
@@ -11,11 +11,11 @@
  * to make exact choice of the permutation with the 'numthreads' matching wave size.
  * We can't use WaveSize in HLSL either because it would require SM 6.5.
  *
- * Therefore 'kzstdgpu_TgSizeX_DecompressSequences_LdsFseCache' must be defined before including this file,
+ * Therefore 'kzstdgpu_TgSizeX_DecompressSequences_SingleStream' must be defined before including this file,
  * It controls threadgroup size which on hardware with multiple wave size equals to the size of the largest
  * wave that could be created. We determine the actual wave size in the threadgroup by using `WaveLaneCount()`
  * intrinsic and early out waves that are no longer needed.
- * This has an potential overhead of launching unused waves/more constrained(multiple waves) threadgroups
+ * This has an potential overhead of launching unused waves/more constrained (multiple waves) threadgroups
  *
  * Copyright (c) Microsoft. All rights reserved.
  * This code is licensed under the MIT License (MIT).
@@ -45,18 +45,18 @@ ConstantBuffer<Consts> Constants : register(b0);
 ZSTDGPU_DECOMPRESS_SEQUENCES_SRT()
 #include "../zstdgpu_srt_decl_undef.h"
 
-#if !ZSTDGPU_DECOMPRESS_SEQUENCES_NO_LDS_FSE_CACHE
-groupshared uint32_t Lds[kzstdgpu_DecompressSequences_LdsFseCache_LdsSize];
+#if !kzstdgpu_DecompressSequences_SingleStream_NoLdsFseCache
+groupshared uint32_t Lds[kzstdgpu_DecompressSequences_SingleStream_LdsFseCache_LdsSize];
 #define ZSTDGPU_LDS Lds
 #include "../zstdgpu_lds_hlsl.h"
 #endif
 
-#ifndef kzstdgpu_TgSizeX_DecompressSequences_LdsFseCache
-#   error 'kzstdgpu_TgSizeX_DecompressSequences_LdsFseCache' must be defined before including this '.hlsli'
+#ifndef kzstdgpu_TgSizeX_DecompressSequences_SingleStream
+#   error 'kzstdgpu_TgSizeX_DecompressSequences_SingleStream' must be defined before including this '.hlsli'
 #endif
 
 [RootSignature("DescriptorTable(SRV(t0, numDescriptors=6), UAV(u0, numDescriptors=7)), RootConstants(b0, num32BitConstants=1)")]
-[numthreads(kzstdgpu_TgSizeX_DecompressSequences_LdsFseCache, 1, 1)]
+[numthreads(kzstdgpu_TgSizeX_DecompressSequences_SingleStream, 1, 1)]
 void main(uint32_t2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {
 #if defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
@@ -70,5 +70,5 @@ void main(uint32_t2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
     ZSTDGPU_DECOMPRESS_SEQUENCES_SRT()
     #include "../zstdgpu_srt_decl_undef.h"
 
-    zstdgpu_ShaderEntry_DecompressSequences_LdsFseCache(srt, groupId, i, kzstdgpu_TgSizeX_DecompressSequences_LdsFseCache);
+    zstdgpu_ShaderEntry_DecompressSequences_SingleStream(srt, groupId, i, kzstdgpu_TgSizeX_DecompressSequences_SingleStream);
 }

@@ -405,7 +405,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
 
             for (uint32_t i = 0; i < gpuReadbackRes.Counters[kzstdgpu_CounterIndex_Seq_Streams]; ++i)
             {
-                zstdgpu_ShaderEntry_DecompressSequences(srt, i);
+                zstdgpu_ShaderEntry_DecompressSequences_MultiStream(srt, /* groupId */ i, /* threadId */ 0, /* streamsPerGroup */ 1);
             }
         }
 
@@ -757,7 +757,7 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
         zstdgpu_Init_DecompressSequences_SRT(srt, zstdCpu);
         for (uint32_t i = 0; i < CNTRS(Seq_Streams); ++i)
         {
-            zstdgpu_ShaderEntry_DecompressSequences_LdsOutCache(srt, i / kzstdgpu_TgSizeX_DecompressSequences, i % kzstdgpu_TgSizeX_DecompressSequences);
+            zstdgpu_ShaderEntry_DecompressSequences_MultiStream_LdsOutCache(srt, /* groupId */ i, /* threadId */ 0, /* tgSize */ 1, /* streamsPerGroup */ 1, /* cacheDwordsPerStream */ 64);
         }
 
         // NOTE(pamartis): some helper passes that don't have CPU/GPU portability
