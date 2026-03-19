@@ -8,7 +8,10 @@
  *
  * Advanced Technology Group (ATG)
  * Author(s):   Pavel Martishevsky (pamartis@microsoft.com)
+ * 
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
+
 
 #include <stdint.h>
 #include <assert.h>
@@ -614,6 +617,14 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
             context->DecompressSequences_StreamsPerGroup = 1;
             ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences64);
         }
+        else if (desc.VendorId == 0x10de)
+        {
+            // Nvidia
+            ZSTDGPU_KERNEL_MAP(DecompressLiterals, DecompressLiterals_LdsStoreCache32_16);
+            context->DecompressLiterals_LdsStoreCache_StreamsPerGroup = 16;
+            ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_LdsFseCache32);
+            ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences64);
+        }
         else if (featureOptions1.WaveLaneCountMax == 128)
         {
             ZSTDGPU_KERNEL_MAP(DecompressLiterals, DecompressLiterals_LdsStoreCache128_8);
@@ -622,7 +633,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
             context->DecompressSequences_StreamsPerGroup = 1;
             ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences128);
         }
-        else //if (desc.VendorId == 0x10de || desc.VendorId == 0x8086 || featureOptions1.WaveLaneCountMax == 32)
+        else //if (desc.VendorId == 0x8086 || featureOptions1.WaveLaneCountMax == 32)
         {
             ZSTDGPU_KERNEL_MAP(DecompressLiterals, DecompressLiterals_LdsStoreCache32_16);
             context->DecompressLiterals_LdsStoreCache_StreamsPerGroup = 16;
