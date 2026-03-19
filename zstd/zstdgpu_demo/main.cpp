@@ -1216,7 +1216,7 @@ int WINAPI wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE, _In_ LPWSTR lp
     // NOTE(pamartis): This variable is needed to support '--ext-mem' demo mode supplying into zstdgpu library
     // 'compressed' data and 'meta' (references) to zstd frames -- as pre-loaded into VMEM buffers
     // TODO(pamartis): Expose this option as command line option
-    static const uint32_t testSourceInGpuMemory = 0u;
+    const volatile uint32_t testSourceInGpuMemory = 0u;
 
     d3d12aid_MappedBuffer zstdCompressedFramesMemory;
     d3d12aid_MappedBuffer zstdCompressedFramesRefs;

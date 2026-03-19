@@ -3872,7 +3872,6 @@ static void zstdgpu_ShaderEntry_DecompressSequences_MultiStream_LdsOutCache(ZSTD
         uint32_t stateOffs = ZSTDGPU_BACKWARD_BITBUF(GetNoRefill)(bitBuffer, initBitcntOffs);
         uint32_t stateMLen = ZSTDGPU_BACKWARD_BITBUF(GetNoRefill)(bitBuffer, initBitcntMLen);
 
-        const uint32_t seqMemStart = seqRefDst.offs;
         const uint32_t storeCacheThreadOffset = seqStreamIdxInGroup * cacheDwordsPerStream;
 
         const uint32_t laneCnt = zstdgpu_MinU32(WaveGetLaneCount(), tgSize);
