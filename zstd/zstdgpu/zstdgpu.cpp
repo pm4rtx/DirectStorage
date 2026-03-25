@@ -8,10 +8,11 @@
  *
  * Advanced Technology Group (ATG)
  * Author(s):   Pavel Martishevsky (pamartis@microsoft.com)
- * 
+ *
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  */
 
+#define ZSTDGPU_ENABLE_TIMESTAMPS 0
 
 #include <stdint.h>
 #include <assert.h>
@@ -1254,7 +1255,8 @@ ZSTDGPU_ENUM(Status) zstdgpu_SubmitWithInteralMemory(zstdgpu_PerRequestContext r
 #define zstdgpu_PushReadback(name) if (0 != req->resInfo.name##_ByteSizeInternal) cmdList->CopyResource(req->resData.gpu2Cpu.name, req->resData.gpuOnly.name)
 #endif
 
-#if 0
+#if ZSTDGPU_ENABLE_TIMESTAMPS == 0
+
 #define ZSTDGPU_KERNEL_SCOPE(name, cmdList, statement)  \
     do                                                  \
     {                                                   \
@@ -1866,6 +1868,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXEndEvent(cmdList);
     }
 
+#if ZSTDGPU_ENABLE_TIMESTAMPS
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"DUMMY Barrier for Profiling");
         D3D12_RESOURCE_BARRIER barriers[1];
@@ -1873,6 +1876,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->ResourceBarrier(_countof(barriers), barriers);
         PIXEndEvent(cmdList);
     }
+#endif
 
     // NOTE(pamartis): (can run in parallel with FSE-compressed Huffman Weight Decompression, right after FSE table initialisation)
     if (req->zstdCmpBlockCount > 0)
@@ -2154,6 +2158,7 @@ ZSTDGPU_API void zstdgpu_ReadbackTimestamps(zstdgpu_PerRequestContext req, ID3D1
 
 ZSTDGPU_API void zstdgpu_RetrieveTimestamps(const wchar_t **outTimestampScopeNames, uint64_t *outTimestampScopeClocks, uint32_t *inoutTimestampScopeCnt, zstdgpu_PerRequestContext req, uint32_t stageIndex)
 {
+#if ZSTDGPU_ENABLE_TIMESTAMPS
     uint32_t timestampScopeCountPerStage = 0;
     #define ZSTDGPU_KERNEL_SCOPE_X(name, desc) +1
     if (stageIndex == 0)
@@ -2219,4 +2224,12 @@ ZSTDGPU_API void zstdgpu_RetrieveTimestamps(const wchar_t **outTimestampScopeNam
     {
         *inoutTimestampScopeCnt = 0;
     }
+#else
+    *inoutTimestampScopeCnt = 0;
+
+    ZSTDGPU_UNUSED(outTimestampScopeNames);
+    ZSTDGPU_UNUSED(outTimestampScopeClocks);
+    ZSTDGPU_UNUSED(req);
+    ZSTDGPU_UNUSED(stageIndex);
+#endif /* #if ZSTDGPU_ENABLE_TIMESTAMPS */
 }
