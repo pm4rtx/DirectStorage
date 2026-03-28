@@ -1308,6 +1308,9 @@ static void zstdgpu_Dispatch32Bit(ID3D12GraphicsCommandList *cmdList, uint32_t t
 #endif
 }
 
+#define zstdgpu_DispatchIndirect(cmdList, counterName) \
+    cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, req->resData.gpuOnly.Counters, kzstdgpu_CounterIndex_##counterName * sizeof(uint32_t), NULL, 0)
+
 void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandList *cmdList)
 {
     {
@@ -1703,10 +1706,9 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootShaderResourceView(1, req->resData.gpuOnly.LitStreamBuckets->GetGPUVirtualAddress());
         cmdList->SetComputeRootShaderResourceView(2, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(3, req->resData.gpuOnly.LitStreamRemap->GetGPUVirtualAddress());
-        ID3D12Resource* argBuf = req->resData.gpuOnly.Counters;
 
         ZSTDGPU_KERNEL_SCOPE(GroupCompressedLiterals, cmdList,
-            cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_GroupCompressedLiteralsGroups * sizeof(uint32_t), NULL, 0);
+            zstdgpu_DispatchIndirect(cmdList, GroupCompressedLiteralsGroups);
         );
 
         PIXEndEvent(cmdList);
@@ -1722,14 +1724,13 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
 
             // NOTE: we run 4 ExecuteIndirects (per argument) in order to be able to (but we don't do this for prototype)
             // switch PSO to more optimial (depending on maximal FSE table size) because D3D12 doesn't allow to switch PSOs in ExecuteIndirect.
-            ID3D12Resource* argBuf = req->resData.gpuOnly.Counters;
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Huffman Weights");
             uint32_t tableStartIndex = 0;
             cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 0);
             cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartHufW(0, req->zstdCmpBlockCount), 1);
             cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_HufW, 2);
-            cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_FseHufW * sizeof(uint32_t), NULL, 0);
+            zstdgpu_DispatchIndirect(cmdList, FseHufW);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Literal Lengths");
@@ -1737,7 +1738,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 0);
             cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartLLen(0, req->zstdCmpBlockCount), 1);
             cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_LLen, 2);
-            cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_FseLLen * sizeof(uint32_t), NULL, 0);
+            zstdgpu_DispatchIndirect(cmdList, FseLLen);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Offsets");
@@ -1745,7 +1746,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 0);
             cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartOffs(0, req->zstdCmpBlockCount), 1);
             cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_Offs, 2);
-            cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_FseOffs * sizeof(uint32_t), NULL, 0);
+            zstdgpu_DispatchIndirect(cmdList, FseOffs);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Match Lengths");
@@ -1753,7 +1754,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 0);
             cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartMLen(0, req->zstdCmpBlockCount), 1);
             cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_MLen, 2);
-            cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_FseMLen * sizeof(uint32_t), NULL, 0);
+            zstdgpu_DispatchIndirect(cmdList, FseMLen);
             PIXEndEvent(cmdList);
             PIXEndEvent(cmdList);
         });
@@ -1780,9 +1781,8 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Decompress Huffman Weights]");
         BIND_RS_PS_SRT(DecompressHuffmanWeights);
 
-        ID3D12Resource* argBuf = req->resData.gpuOnly.Counters;
         ZSTDGPU_KERNEL_SCOPE(DecompressHuffmanWeights, cmdList,
-            cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_DecompressHuffmanWeightsGroups * sizeof(uint32_t), NULL, 0);
+            zstdgpu_DispatchIndirect(cmdList, DecompressHuffmanWeightsGroups);
         );
         PIXEndEvent(cmdList);
     }
@@ -1794,9 +1794,8 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 0);
         cmdList->SetComputeRoot32BitConstant(1, req->resInfo.CompressedData_ByteSize, 1);
 
-        ID3D12Resource* argBuf = req->resData.gpuOnly.Counters;
         ZSTDGPU_KERNEL_SCOPE(DecodeHuffmanWeights, cmdList,
-            cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_DecodeHuffmanWeightsGroups * sizeof(uint32_t), NULL, 0);
+            zstdgpu_DispatchIndirect(cmdList, DecodeHuffmanWeightsGroups);
         );
         PIXEndEvent(cmdList);
     }
@@ -1820,21 +1819,20 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Pre-Init Huffman Table]");
         BIND_RS_PS_SRT(InitHuffmanTable);
-        ID3D12Resource* argBuf = req->resData.gpuOnly.Counters;
 
         ZSTDGPU_KERNEL_SCOPE(InitHuffmanTable, cmdList,
         {
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Path: FSE-compressed Huffman Weights]");
             {
                 cmdList->SetComputeRoot32BitConstant(1, /** HuffmaTableIndexBase*/0, 0);
-                cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_FseHufW * sizeof(uint32_t), NULL, 0);
+                zstdgpu_DispatchIndirect(cmdList, FseHufW);
             }
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Path: Uncompressed Huffman Weights]");
             {
                 cmdList->SetComputeRoot32BitConstant(1, /** HuffmaTableIndexBase = zstdCmpBlockCount meaning indices are reversed */req->zstdCmpBlockCount, 0);
-                cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_HUF_WgtStreams * sizeof(uint32_t), NULL, 0);
+                zstdgpu_DispatchIndirect(cmdList, HUF_WgtStreams);
             }
             PIXEndEvent(cmdList);
         });
@@ -1861,9 +1859,8 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         BIND_RS_PS_SRT(DecompressLiterals);
         cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 0);
 
-        ID3D12Resource* argBuf = req->resData.gpuOnly.Counters;
         ZSTDGPU_KERNEL_SCOPE(DecompressLiterals, cmdList,
-            cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, argBuf, kzstdgpu_CounterIndex_DecompressLiteralsGroups * sizeof(uint32_t), NULL, 0);
+            zstdgpu_DispatchIndirect(cmdList, DecompressLiteralsGroups);
         );
         PIXEndEvent(cmdList);
     }
