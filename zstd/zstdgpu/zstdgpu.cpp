@@ -1309,7 +1309,7 @@ static void zstdgpu_Dispatch32Bit(ID3D12GraphicsCommandList *cmdList, uint32_t t
 }
 
 #define zstdgpu_DispatchIndirect(cmdList, counterName) \
-    cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, req->resData.gpuOnly.Counters, offsetof(zstdgpu_Counters, counterName), NULL, 0)
+    cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, req->resData.gpuOnly.DispatchArgs, kzstdgpu_DispatchSlot_##counterName * kzstdgpu_DispatchSlot_StrideInUInt32 * sizeof(uint32_t), NULL, 0)
 
 void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandList *cmdList)
 {
@@ -1625,6 +1625,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Update Dispatch Args]");
         d3d12aid_ComputeRsPs_Set(&req->UpdateDispatchArgs, cmdList);
         cmdList->SetComputeRootUnorderedAccessView(0, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
+        cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.DispatchArgs->GetGPUVirtualAddress());
         ZSTDGPU_KERNEL_SCOPE(UpdateDispatchArgs, cmdList,
             cmdList->Dispatch(1, 1, 1);
         );
@@ -1641,13 +1642,14 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootUnorderedAccessView(2, req->resData.gpuOnly.LitStreamEndPerHuffmanTable->GetGPUVirtualAddress() + req->zstdCmpBlockCount * sizeof(uint32_t));
         cmdList->SetComputeRootUnorderedAccessView(3, req->resData.gpuOnly.LitGroupEndPerHuffmanTable->GetGPUVirtualAddress() + req->zstdCmpBlockCount * sizeof(uint32_t));
         cmdList->SetComputeRootUnorderedAccessView(4, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
-        cmdList->SetComputeRoot32BitConstant(5, req->zstdCmpBlockCount, 0);
+        cmdList->SetComputeRootUnorderedAccessView(5, req->resData.gpuOnly.DispatchArgs->GetGPUVirtualAddress());
+        cmdList->SetComputeRoot32BitConstant(6, req->zstdCmpBlockCount, 0);
 #if 0
         // NOTE(pamartis): Use this pass to with DecompressLiterals kernel
-        cmdList->SetComputeRoot32BitConstant(5, kzstdgpu_TgSizeX_DecompressLiterals, 1);
+        cmdList->SetComputeRoot32BitConstant(6, kzstdgpu_TgSizeX_DecompressLiterals, 1);
 #else
         // NOTE(pamartis): Use this path to with DecompressLiterals_LdsStoreCache* kernels
-        cmdList->SetComputeRoot32BitConstant(5, req->DecompressLiterals_LdsStoreCache_StreamsPerGroup, 1);
+        cmdList->SetComputeRoot32BitConstant(6, req->DecompressLiterals_LdsStoreCache_StreamsPerGroup, 1);
 #endif
         ZSTDGPU_KERNEL_SCOPE(ComputePrefixSum, cmdList,
             cmdList->Dispatch(ZSTDGPU_TG_COUNT(req->zstdCmpBlockCount, kzstdgpu_TgSizeX_PrefixSum_LiteralCount), 1, 1);
@@ -1658,42 +1660,48 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     if (req->zstdCmpBlockCount > 0)
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier with Resources for [Init FSE Table] and [Group Lilteral Streams]");
-        D3D12_RESOURCE_BARRIER barriers[12];
+        D3D12_RESOURCE_BARRIER barriers[13];
+        uint32_t bc = 0;
         // last written by [Update Dispatch Args] and [Compute `Per-Huffman Table` Literal Stream Count Prefix]
-        // next read by [Group Lilteral Streams] and [Init FSE Table]
-        setResourceUavToSrvCopyIndirectSync(barriers, 0, req->resData.gpuOnly.Counters);
+        // next read by [Group Lilteral Streams] and [Init FSE Table] and [Decompress Literals]
+        setResourceUavToSrvCopyIndirectSync(barriers, bc ++, req->resData.gpuOnly.Counters);
+        // last written by [Update Dispatch Args] and [Compute `Per-Huffman Table` Literal Stream Count Prefix]
+        // next read by ExecuteIndirect calls
+        setResourceState(barriers, bc ++, req->resData.gpuOnly.DispatchArgs, UNORDERED_ACCESS, INDIRECT_ARGUMENT);
         // last written by [Parse Compressed Blocks]
         // next read by [Init FSE Table]
         // CAN MOVE EARLIER
-        setResourceUavToSrvSync(barriers, 1, req->resData.gpuOnly.FseProbs);
-        setResourceUavToSrvSync(barriers, 2, req->resData.gpuOnly.FseInfos);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.FseProbs);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.FseInfos);
         // last written by [Compute `Per-Huffman Table` Literal Stream Count Prefix]
         // next read by [Group Lilteral Streams]
-        setResourceUavToSrvSync(barriers, 3, req->resData.gpuOnly.LitStreamEndPerHuffmanTable);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.LitStreamEndPerHuffmanTable);
         // last written by [Parse Compressed Blocks]
         // next read by [Group Lilteral Streams]
-        setResourceUavToSrvSync(barriers, 4, req->resData.gpuOnly.LitStreamBuckets);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.LitStreamBuckets);
         // last written by [Parse Compressed Blocks]
         // last read by [DEBUG READBACK]
-        setResourceUavToSrvSync(barriers, 5, req->resData.gpuOnly.CompressedBlocks);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.CompressedBlocks);
         // last written by [Parse Compressed Blocks]
         // next read by [Decompress Huffman Weights] and [Decode Uncompressed Huffman Weights] and [DEBUG READBACK]
-        setResourceUavToSrvSync(barriers, 6, req->resData.gpuOnly.HufRefs);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.HufRefs);
         // last written by [Compute `Per-Huffman Table` Literal Stream Count Prefix]
         // next read by [Init Huffman Table and Decompress Literals]
-        setResourceUavToSrvSync(barriers, 7, req->resData.gpuOnly.LitGroupEndPerHuffmanTable);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.LitGroupEndPerHuffmanTable);
         //
-        setResourceUavToSrvSync(barriers, 8, req->resData.gpuOnly.TableIndexLookback);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.TableIndexLookback);
         // last written by [Parse Compressed Blocks]
         // next read by [Init Huffman Table and Decompress Literals]
-        setResourceUavToSrvSync(barriers, 9, req->resData.gpuOnly.LitRefs);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.LitRefs);
         // last written by [Parse Compressed Blocks]
         // next read by [Decompress Sequences]
-        setResourceUavToSrvSync(barriers, 10, req->resData.gpuOnly.SeqRefs);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.SeqRefs);
         // last written by [Parse Compressed Blocks]
         // next written by [Decompress Huffman Weights] and read as UAV by [Decode Uncompressed Huffman Weights]
-        setResourceUavSync(barriers, 11, req->resData.gpuOnly.DecompressedHuffmanWeightCount);
-        cmdList->ResourceBarrier(_countof(barriers), barriers);
+        setResourceUavSync(barriers, bc ++, req->resData.gpuOnly.DecompressedHuffmanWeightCount);
+
+        ZSTDGPU_ASSERT(bc <= _countof(barriers));
+        cmdList->ResourceBarrier(bc, barriers);
         PIXEndEvent(cmdList);
     }
 
@@ -1708,7 +1716,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootUnorderedAccessView(3, req->resData.gpuOnly.LitStreamRemap->GetGPUVirtualAddress());
 
         ZSTDGPU_KERNEL_SCOPE(GroupCompressedLiterals, cmdList,
-            zstdgpu_DispatchIndirect(cmdList, GroupCompressedLiteralsGroups);
+            zstdgpu_DispatchIndirect(cmdList, GroupCompressedLiterals);
         );
 
         PIXEndEvent(cmdList);
@@ -1782,7 +1790,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         BIND_RS_PS_SRT(DecompressHuffmanWeights);
 
         ZSTDGPU_KERNEL_SCOPE(DecompressHuffmanWeights, cmdList,
-            zstdgpu_DispatchIndirect(cmdList, DecompressHuffmanWeightsGroups);
+            zstdgpu_DispatchIndirect(cmdList, DecompressHuffmanWeights);
         );
         PIXEndEvent(cmdList);
     }
@@ -1795,7 +1803,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRoot32BitConstant(1, req->resInfo.CompressedData_ByteSize, 1);
 
         ZSTDGPU_KERNEL_SCOPE(DecodeHuffmanWeights, cmdList,
-            zstdgpu_DispatchIndirect(cmdList, DecodeHuffmanWeightsGroups);
+            zstdgpu_DispatchIndirect(cmdList, DecodeHuffmanWeights);
         );
         PIXEndEvent(cmdList);
     }
@@ -1860,7 +1868,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 0);
 
         ZSTDGPU_KERNEL_SCOPE(DecompressLiterals, cmdList,
-            zstdgpu_DispatchIndirect(cmdList, DecompressLiteralsGroups);
+            zstdgpu_DispatchIndirect(cmdList, DecompressLiterals);
         );
         PIXEndEvent(cmdList);
     }

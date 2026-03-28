@@ -1,8 +1,8 @@
 /**
  * ZstdGpuUpdateDispatchArgs.hlsl
  *
- * A compute shader that updates arguments for indirect Dispatch calls from
- * corresponding counters and threadgroup dimensions.
+ * A compute shader that reads source counters from the Counters and writes dispatch arguments
+ * into the DispatchArgs buffer. The shader also updates derived counter fields in the Counters buffer.
  * The shader needs to be dispatched as single threadgroup.
  *
  * Copyright (c) Microsoft. All rights reserved.
@@ -16,29 +16,38 @@
  * Author(s):   Pavel Martishevsky (pamartis@microsoft.com)
  */
 
-#include "../zstdgpu_structs.h"
+#include "../zstdgpu_shaders.h"
 
 #ifndef kzstdgpu_DecompressSequences_StreamsPerTG
 #define kzstdgpu_DecompressSequences_StreamsPerTG 8
 #endif
 
-RWStructuredBuffer<zstdgpu_Counters> ZstdCounters : register(u0);
+RWStructuredBuffer<zstdgpu_Counters>  ZstdCounters     : register(u0);
+RWStructuredBuffer<uint32_t>          ZstdDispatchArgs : register(u1);
 
-[RootSignature("UAV(u0)")]
+[RootSignature("UAV(u0), UAV(u1)")]
 [numthreads(1, 1, 1)]
 void main()
 {
     // NOTE(pamartis): This number of groups doing the decompression of Huffman weights depends on
     // the number FSE tables for Huffman weights because those numbers are the same.
     // This is because each FSE table decompresses its own Huffman weights' stream.
-    ZstdCounters[0].DecompressHuffmanWeightsGroups = ZSTDGPU_TG_COUNT(ZstdCounters[0].FseHufW, kzstdgpu_TgSizeX_DecompressHuffmanWeights);
+    zstdgpu_EmitDispatch(ZstdDispatchArgs, kzstdgpu_DispatchSlot_FseHufW,                   ZstdCounters[0].FseHufW,        1);
+    zstdgpu_EmitDispatch(ZstdDispatchArgs, kzstdgpu_DispatchSlot_FseLLen,                   ZstdCounters[0].FseLLen,        1);
+    zstdgpu_EmitDispatch(ZstdDispatchArgs, kzstdgpu_DispatchSlot_FseOffs,                   ZstdCounters[0].FseOffs,        1);
+    zstdgpu_EmitDispatch(ZstdDispatchArgs, kzstdgpu_DispatchSlot_FseMLen,                   ZstdCounters[0].FseMLen,        1);
+    zstdgpu_EmitDispatch(ZstdDispatchArgs, kzstdgpu_DispatchSlot_HUF_WgtStreams,            ZstdCounters[0].HUF_WgtStreams, 1);
+    zstdgpu_EmitDispatch(ZstdDispatchArgs, kzstdgpu_DispatchSlot_DecompressHuffmanWeights,  ZstdCounters[0].FseHufW,        kzstdgpu_TgSizeX_DecompressHuffmanWeights);
 
     // NOTE(pamartis): We also do decoding of uncompressed Huffman Weights stored as two nibbles
     // per byte to make sure final representation (a byte per weight) becomes identical, so it's
     // easier to use during literal decoding
-    ZstdCounters[0].DecodeHuffmanWeightsGroups = ZSTDGPU_TG_COUNT(ZstdCounters[0].HUF_WgtStreams, kzstdgpu_TgSizeX_DecodeHuffmanWeights);
+    zstdgpu_EmitDispatch(ZstdDispatchArgs, kzstdgpu_DispatchSlot_DecodeHuffmanWeights,     ZstdCounters[0].HUF_WgtStreams,  kzstdgpu_TgSizeX_DecodeHuffmanWeights);
+    zstdgpu_EmitDispatch(ZstdDispatchArgs, kzstdgpu_DispatchSlot_GroupCompressedLiterals,  ZstdCounters[0].HUF_Streams,     32);
+    zstdgpu_EmitDispatch(ZstdDispatchArgs, kzstdgpu_DispatchSlot_DecompressSequences,      ZstdCounters[0].Seq_Streams,     kzstdgpu_DecompressSequences_StreamsPerTG);
 
-    ZstdCounters[0].GroupCompressedLiteralsGroups = ZSTDGPU_TG_COUNT(ZstdCounters[0].HUF_Streams, 32);
+    // NOTE: DecompressLiterals slot is written by ComputePrefixSum (runs after this shader)
 
+    // Update derived counter field in Counters (kept for shader bounds checks)
     ZstdCounters[0].DecompressSequencesGroups = ZSTDGPU_TG_COUNT(ZstdCounters[0].Seq_Streams, kzstdgpu_DecompressSequences_StreamsPerTG);
 }

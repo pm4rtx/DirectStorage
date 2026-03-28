@@ -297,39 +297,14 @@ static const uint32_t kzstdgpu_FseProbTableIndex_Repeat = kzstdgpu_FseProbTableI
 
 typedef struct zstdgpu_Counters
 {
-    // Dispatch slots: each group of 3 = (X, TGroupCount_Y=1, TGroupCount_Z=1) for ExecuteIndirect
     uint32_t FseHufW;
-    uint32_t FseHufW_TGroupCount_Y;
-    uint32_t FseHufW_TGroupCount_Z;
     uint32_t FseLLen;
-    uint32_t FseLLen_TGroupCount_Y;
-    uint32_t FseLLen_TGroupCount_Z;
     uint32_t FseOffs;
-    uint32_t FseOffs_TGroupCount_Y;
-    uint32_t FseOffs_TGroupCount_Z;
     uint32_t FseMLen;
-    uint32_t FseMLen_TGroupCount_Y;
-    uint32_t FseMLen_TGroupCount_Z;
-    uint32_t DecompressHuffmanWeightsGroups;
-    uint32_t DecompressHuffmanWeightsGroups_TGroupCount_Y;
-    uint32_t DecompressHuffmanWeightsGroups_TGroupCount_Z;
-    uint32_t DecodeHuffmanWeightsGroups;
-    uint32_t DecodeHuffmanWeightsGroups_TGroupCount_Y;
-    uint32_t DecodeHuffmanWeightsGroups_TGroupCount_Z;
-    uint32_t GroupCompressedLiteralsGroups;
-    uint32_t GroupCompressedLiteralsGroups_TGroupCount_Y;
-    uint32_t GroupCompressedLiteralsGroups_TGroupCount_Z;
     uint32_t DecompressLiteralsGroups;
-    uint32_t DecompressLiteralsGroups_TGroupCount_Y;
-    uint32_t DecompressLiteralsGroups_TGroupCount_Z;
     uint32_t DecompressSequencesGroups;
-    uint32_t DecompressSequencesGroups_TGroupCount_Y;
-    uint32_t DecompressSequencesGroups_TGroupCount_Z;
-    uint32_t HUF_WgtStreams;
-    uint32_t HUF_WgtStreams_TGroupCount_Y;
-    uint32_t HUF_WgtStreams_TGroupCount_Z;
 
-    // Plain counters (no dispatch padding)
+    uint32_t HUF_WgtStreams;
     uint32_t Seq_Streams_DecodedItems;
     uint32_t HUF_Streams_DecodedBytes;
     uint32_t Seq_Streams;
@@ -345,6 +320,19 @@ typedef struct zstdgpu_Counters
     uint32_t Frames_UncompressedByteSize;
     uint32_t Frames_ExecuteSequences;
 } zstdgpu_Counters;
+
+static const uint32_t kzstdgpu_DispatchSlot_FseHufW                      = 0;
+static const uint32_t kzstdgpu_DispatchSlot_FseLLen                      = 1;
+static const uint32_t kzstdgpu_DispatchSlot_FseOffs                      = 2;
+static const uint32_t kzstdgpu_DispatchSlot_FseMLen                      = 3;
+static const uint32_t kzstdgpu_DispatchSlot_DecompressHuffmanWeights     = 4;
+static const uint32_t kzstdgpu_DispatchSlot_DecodeHuffmanWeights         = 5;
+static const uint32_t kzstdgpu_DispatchSlot_GroupCompressedLiterals      = 6;
+static const uint32_t kzstdgpu_DispatchSlot_HUF_WgtStreams               = 7;
+static const uint32_t kzstdgpu_DispatchSlot_DecompressLiterals           = 8;
+static const uint32_t kzstdgpu_DispatchSlot_DecompressSequences          = 9;
+static const uint32_t kzstdgpu_DispatchSlot_Count                        = 10;
+static const uint32_t kzstdgpu_DispatchSlot_StrideInUInt32               = 3;
 
 // NOTE(pamartis):
 //      We use macro here to make sure we can use them to compile-out

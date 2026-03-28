@@ -17,7 +17,7 @@
  * Author(s):   Pavel Martishevsky (pamartis@microsoft.com)
  */
 
-#include "../zstdgpu_structs.h"
+#include "../zstdgpu_shaders.h"
 
 struct Consts
 {
@@ -36,9 +36,10 @@ RWStructuredBuffer<uint32_t>    ZstdLitStreamCountToPrefixLookback  : register(u
 globallycoherent
 RWStructuredBuffer<uint32_t>    ZstdLitGroupCountToPrefixLookback   : register(u3);
 
-RWStructuredBuffer<zstdgpu_Counters> ZstdCounters                        : register(u4);
+RWStructuredBuffer<zstdgpu_Counters>  ZstdCounters                        : register(u4);
+RWStructuredBuffer<uint32_t>          ZstdDispatchArgs                    : register(u5);
 
-[RootSignature("UAV(u0), UAV(u1), UAV(u2), UAV(u3), UAV(u4), RootConstants(b0, num32BitConstants=2)")]
+[RootSignature("UAV(u0), UAV(u1), UAV(u2), UAV(u3), UAV(u4), UAV(u5), RootConstants(b0, num32BitConstants=2)")]
 [numthreads(kzstdgpu_TgSizeX_PrefixSum_LiteralCount, 1, 1)]
 void main(uint i : SV_DispatchThreadId)
 {
@@ -136,6 +137,8 @@ void main(uint i : SV_DispatchThreadId)
     // to be dispatched for literal decompression
     if (i == Constants.elemToPrefixCount - 1)
     {
-        ZstdCounters[0].DecompressLiteralsGroups = ZstdLitGroupCountToPrefix[i];
+        const uint32_t totalGroups = ZstdLitGroupCountToPrefix[i];
+        ZstdCounters[0].DecompressLiteralsGroups = totalGroups;
+        zstdgpu_EmitDispatch(ZstdDispatchArgs, kzstdgpu_DispatchSlot_DecompressLiterals, totalGroups, 1);
     }
 }

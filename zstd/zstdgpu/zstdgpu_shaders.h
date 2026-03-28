@@ -46,6 +46,14 @@ static void zstdgpu_TypedStoreU16(ZSTDGPU_RW_TYPED_BUFFER(uint32_t, uint16_t) in
 #endif
 }
 
+static void zstdgpu_EmitDispatch(ZSTDGPU_RW_BUFFER(uint32_t) dispatchArgs, uint32_t slot, uint32_t elemCount, uint32_t elemsPerTGroup)
+{
+    const uint32_t baseIdx = slot * kzstdgpu_DispatchSlot_StrideInUInt32;
+    dispatchArgs[baseIdx + 0] = ZSTDGPU_TG_COUNT(elemCount, elemsPerTGroup);
+    dispatchArgs[baseIdx + 1] = 1;
+    dispatchArgs[baseIdx + 2] = 1;
+}
+
 static uint32_t zstdgpu_GlobalExclusivePrefixSum(ZSTDGPU_RW_BUFFER_GLC(uint32_t) lookback,
                                                  uint32_t vgprExclusivePrefix,
                                                  uint32_t vgprCount,
@@ -535,35 +543,12 @@ static void zstdgpu_ShaderEntry_InitResources(ZSTDGPU_PARAM_INOUT(zstdgpu_InitRe
         if (threadId == 0)
         {
             srt.inoutCounters[0].FseHufW                                     = 0;
-            srt.inoutCounters[0].FseHufW_TGroupCount_Y                       = 1;
-            srt.inoutCounters[0].FseHufW_TGroupCount_Z                       = 1;
             srt.inoutCounters[0].FseLLen                                     = 1;
-            srt.inoutCounters[0].FseLLen_TGroupCount_Y                       = 1;
-            srt.inoutCounters[0].FseLLen_TGroupCount_Z                       = 1;
             srt.inoutCounters[0].FseOffs                                     = 1;
-            srt.inoutCounters[0].FseOffs_TGroupCount_Y                       = 1;
-            srt.inoutCounters[0].FseOffs_TGroupCount_Z                       = 1;
             srt.inoutCounters[0].FseMLen                                     = 1;
-            srt.inoutCounters[0].FseMLen_TGroupCount_Y                       = 1;
-            srt.inoutCounters[0].FseMLen_TGroupCount_Z                       = 1;
-            srt.inoutCounters[0].DecompressHuffmanWeightsGroups              = 0;
-            srt.inoutCounters[0].DecompressHuffmanWeightsGroups_TGroupCount_Y = 1;
-            srt.inoutCounters[0].DecompressHuffmanWeightsGroups_TGroupCount_Z = 1;
-            srt.inoutCounters[0].DecodeHuffmanWeightsGroups                  = 0;
-            srt.inoutCounters[0].DecodeHuffmanWeightsGroups_TGroupCount_Y    = 1;
-            srt.inoutCounters[0].DecodeHuffmanWeightsGroups_TGroupCount_Z    = 1;
-            srt.inoutCounters[0].GroupCompressedLiteralsGroups               = 0;
-            srt.inoutCounters[0].GroupCompressedLiteralsGroups_TGroupCount_Y = 1;
-            srt.inoutCounters[0].GroupCompressedLiteralsGroups_TGroupCount_Z = 1;
             srt.inoutCounters[0].DecompressLiteralsGroups                    = 0;
-            srt.inoutCounters[0].DecompressLiteralsGroups_TGroupCount_Y      = 1;
-            srt.inoutCounters[0].DecompressLiteralsGroups_TGroupCount_Z      = 1;
             srt.inoutCounters[0].DecompressSequencesGroups                   = 0;
-            srt.inoutCounters[0].DecompressSequencesGroups_TGroupCount_Y     = 1;
-            srt.inoutCounters[0].DecompressSequencesGroups_TGroupCount_Z     = 1;
             srt.inoutCounters[0].HUF_WgtStreams                              = 0;
-            srt.inoutCounters[0].HUF_WgtStreams_TGroupCount_Y                = 1;
-            srt.inoutCounters[0].HUF_WgtStreams_TGroupCount_Z                = 1;
             srt.inoutCounters[0].Seq_Streams_DecodedItems                    = 0;
             srt.inoutCounters[0].HUF_Streams_DecodedBytes                    = 0;
             srt.inoutCounters[0].Seq_Streams                                 = 0;
