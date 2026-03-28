@@ -44,6 +44,7 @@
 
 struct Consts
 {
+    uint32_t tgOffset;
     uint32_t tableStartIndex;
     uint32_t tableDataStart;
     uint32_t tableDataCount;
@@ -64,7 +65,7 @@ groupshared uint32_t Lds[kzstdgpu_InitFseTable_Experimental_LdsSize];
 #define ZSTDGPU_LDS Lds
 #include "../zstdgpu_lds_hlsl.h"
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors = 2), UAV(u0, numDescriptors=1)), RootConstants(b0, num32BitConstants=3)")]
+[RootSignature("DescriptorTable(SRV(t0, numDescriptors = 2), UAV(u0, numDescriptors=1)), RootConstants(b0, num32BitConstants=4)")]
 [numthreads(kzstdgpu_TgSizeX_InitFseTable, 1, 1)]
 void main(uint32_t groupId : SV_GroupId, uint32_t i : SV_GroupThreadId)
 {

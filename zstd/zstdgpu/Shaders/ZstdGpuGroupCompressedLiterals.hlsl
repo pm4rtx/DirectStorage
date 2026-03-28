@@ -23,7 +23,14 @@ StructuredBuffer<zstdgpu_CompressedLiteralHuffmanBucket> ZstdLitStreamHuffmanBuc
 StructuredBuffer<zstdgpu_Counters>                      ZstdCounters                : register(t2);
 RWStructuredBuffer<uint32_t>                            ZstdLitStreamMap            : register(u0);
 
-[RootSignature("SRV(t0), SRV(t1), SRV(t2), UAV(u0)")]
+struct Consts
+{
+    uint32_t tgOffset;
+};
+
+ConstantBuffer<Consts> Constants : register(b0);
+
+[RootSignature("SRV(t0), SRV(t1), SRV(t2), UAV(u0), RootConstants(b0, num32BitConstants=1)")]
 [numthreads(32, 1, 1)]
 void main(uint litStreamId : SV_DispatchThreadId)
 {
