@@ -923,7 +923,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_GetGpuMemoryRequirement(uint32_t *outDefaultHeapByt
 
     if (proceed)
     {
-        #define CNTRS(name) req->resData.gpu2Cpu.CountersCpu[kzstdgpu_CounterIndex_##name]
+        #define CNTRS(name) req->resData.gpu2Cpu.CountersCpu->name
         if (stageIndex == 0)
         {
             zstdgpu_ResourceInfo_Stage_0_Init(&req->resInfo, req->zstdFrameCount, req->zstdCompressedFramesByteCount, ZSTDGPU_ENUM_CONST(SetupInputsType_Frames_GpuMemory) == req->setupInputsType ? 1u : 0u);
@@ -1091,7 +1091,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_SubmitWithInteralMemory(zstdgpu_PerRequestContext r
 
     if (proceed)
     {
-        #define CNTRS(name) req->resData.gpu2Cpu.CountersCpu[kzstdgpu_CounterIndex_##name]
+        #define CNTRS(name) req->resData.gpu2Cpu.CountersCpu->name
 
         // NOTE(pamartis): Recompute memory information for a given stage
         if (stageIndex == 0)
@@ -1309,7 +1309,7 @@ static void zstdgpu_Dispatch32Bit(ID3D12GraphicsCommandList *cmdList, uint32_t t
 }
 
 #define zstdgpu_DispatchIndirect(cmdList, counterName) \
-    cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, req->resData.gpuOnly.Counters, kzstdgpu_CounterIndex_##counterName * sizeof(uint32_t), NULL, 0)
+    cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, req->resData.gpuOnly.Counters, offsetof(zstdgpu_Counters, counterName), NULL, 0)
 
 void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandList *cmdList)
 {
@@ -2143,9 +2143,9 @@ ZSTDGPU_API void zstdgpu_RetrieveGpuResults(zstdgpu_ResourceDataCpu *outGpuResou
     zstdgpu_ResourceDataCpu_InitFromResourceDataGpu(outGpuResources, &req->resData);
 
     // HACK (pamartis): we copy block counts for now, because validation needs it, but we never compute block count on GPU
-    outGpuResources->Counters[kzstdgpu_CounterIndex_Blocks_RAW] = req->zstdRawBlockCount;
-    outGpuResources->Counters[kzstdgpu_CounterIndex_Blocks_RLE] = req->zstdRleBlockCount;
-    outGpuResources->Counters[kzstdgpu_CounterIndex_Blocks_CMP] = req->zstdCmpBlockCount;
+    outGpuResources->Counters->Blocks_RAW = req->zstdRawBlockCount;
+    outGpuResources->Counters->Blocks_RLE = req->zstdRleBlockCount;
+    outGpuResources->Counters->Blocks_CMP = req->zstdCmpBlockCount;
 }
 
 ZSTDGPU_API void zstdgpu_ReadbackTimestamps(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandList *cmdList)

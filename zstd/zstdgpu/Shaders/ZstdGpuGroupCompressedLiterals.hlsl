@@ -20,14 +20,14 @@
 
 StructuredBuffer<uint32_t>                              ZstdLitStreamCountPrefix    : register(t0);
 StructuredBuffer<zstdgpu_CompressedLiteralHuffmanBucket> ZstdLitStreamHuffmanBuckets : register(t1);
-StructuredBuffer<uint32_t>                              ZstdCounters                : register(t2);
+StructuredBuffer<zstdgpu_Counters>                      ZstdCounters                : register(t2);
 RWStructuredBuffer<uint32_t>                            ZstdLitStreamMap            : register(u0);
 
 [RootSignature("SRV(t0), SRV(t1), SRV(t2), UAV(u0)")]
 [numthreads(32, 1, 1)]
 void main(uint litStreamId : SV_DispatchThreadId)
 {
-    if (litStreamId >= ZstdCounters[kzstdgpu_CounterIndex_HUF_Streams])
+    if (litStreamId >= ZstdCounters[0].HUF_Streams)
         return;
 
     const zstdgpu_CompressedLiteralHuffmanBucket bucket = ZstdLitStreamHuffmanBuckets[litStreamId];

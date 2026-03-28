@@ -47,7 +47,7 @@ void main(uint groupId : SV_GroupId, uint i : SV_GroupThreadId)
     #include "../zstdgpu_srt_decl_undef.h"
     srt.huffmanTableSlotCount   = Constants.huffmanTableSlotCount;
 
-    if (groupId >= srt.inCounters[kzstdgpu_CounterIndex_DecompressLiteralsGroups])
+    if (groupId >= srt.inCounters[0].DecompressLiteralsGroups)
         return;
 
     zstdgpu_ShaderEntry_DecompressLiterals(srt, groupId, i, kzstdgpu_TgSizeX_DecompressLiterals);

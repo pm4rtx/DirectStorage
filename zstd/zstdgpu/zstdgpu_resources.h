@@ -29,7 +29,7 @@
     ZSTDGPU_BUFFER(zstdgpu_OffsetAndSize                    , FramesRefs                    )
 
 #define ZSTDGPU_BUFFERS_LIST_READBACK_STAGE_0()                                                 \
-    ZSTDGPU_BUFFER(uint32_t                                 , Counters                      )   \
+    ZSTDGPU_BUFFER(zstdgpu_Counters                         , Counters                      )   \
     ZSTDGPU_BUFFER(uint32_t                                 , PerFrameBlockCountRAW         )   \
     ZSTDGPU_BUFFER(uint32_t                                 , PerFrameBlockCountRLE         )   \
     ZSTDGPU_BUFFER(uint32_t                                 , PerFrameBlockCountCMP         )   \
@@ -258,7 +258,7 @@ static void zstdgpu_ResourceInfo_Stage_0_InitSize(zstdgpu_ResourceInfo *outInfo,
     const uint32_t Frames_Count = frameCount;
     const uint32_t FramesRefs_Count = frameCount;
     const uint32_t CompressedData_Count = (dataCount + 3) / 4; // because CompressedData is in uint32_t
-    const uint32_t Counters_Count = kzstdgpu_CounterIndex_Count;
+    const uint32_t Counters_Count = 1;
     const uint32_t PerFrameBlockCountRAW_Count = frameCount + zstdgpu_GetLookbackBlockCount(frameCount);
     const uint32_t PerFrameBlockCountRLE_Count = PerFrameBlockCountRAW_Count;
     const uint32_t PerFrameBlockCountCMP_Count = PerFrameBlockCountRAW_Count;

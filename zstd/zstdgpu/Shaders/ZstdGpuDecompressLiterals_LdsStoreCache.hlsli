@@ -80,7 +80,7 @@ void main(uint groupId : SV_GroupId, uint i : SV_GroupThreadId)
     #include "../zstdgpu_srt_decl_undef.h"
     srt.huffmanTableSlotCount   = Constants.huffmanTableSlotCount;
 
-    if (groupId >= srt.inCounters[kzstdgpu_CounterIndex_DecompressLiteralsGroups])
+    if (groupId >= srt.inCounters[0].DecompressLiteralsGroups)
         return;
 
     uint32_t htIndex = 0;
@@ -109,7 +109,7 @@ void main(uint groupId : SV_GroupId, uint i : SV_GroupThreadId)
     const uint32_t stateCnt = WaveReadLaneFirst(srt.inHuffmanTableRankIndex[htIndex * kzstdgpu_MaxCount_HuffmanWeightRanks + bitsMax]);
     const uint32_t statePairCnt = stateCnt >> 1u;
 
-    // Expand Huffman Table — pack two symbol+bitcnt pairs per dword
+    // Expand Huffman Table -- pack two symbol+bitcnt pairs per dword
     ZSTDGPU_FOR_WORK_ITEMS(statePairId, statePairCnt, i, kzstdgpu_TgSizeX_DecompressLiterals_LdsStoreCache)
     {
         const uint32_t stateId0 = statePairId << 1u;
