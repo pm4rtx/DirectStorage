@@ -402,10 +402,44 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             srt.inoutPerSeqStreamFinalOffset3   = cpuRes.PerSeqStreamFinalOffset3;
             srt.inoutBlockSizePrefix            = cpuRes.BlockSizePrefix;
 
+            // FIXUP(pamartis): because DecompreSequences requres 'BlockSizePrefix' to contain literal size (on GPU actual prefix is computed later)
+            // we need to setup it properly
+            for (uint32_t i = 0; i < cpuRes.Counters[kzstdgpu_CounterIndex_Blocks_CMP]; ++i)
+            {
+                const uint32_t literalSize = cpuRes.CompressedBlocks[i].literal.size;
+                const uint32_t dstBlockIndex = cpuRes.GlobalBlockIndexPerCmpBlock[i];
+                cpuRes.BlockSizePrefix[dstBlockIndex] = literalSize;
+            }
+            for (uint32_t i = 0; i < cpuRes.Counters[kzstdgpu_CounterIndex_Blocks_RAW]; ++i)
+            {
+                const uint32_t dstBlockIndex = cpuRes.GlobalBlockIndexPerRawBlock[i];
+                cpuRes.BlockSizePrefix[dstBlockIndex] = cpuRes.BlocksRAWRefs[i].size;;
+            }
+            for (uint32_t i = 0; i < cpuRes.Counters[kzstdgpu_CounterIndex_Blocks_RLE]; ++i)
+            {
+                const uint32_t dstBlockIndex = cpuRes.GlobalBlockIndexPerRleBlock[i];
+                cpuRes.BlockSizePrefix[dstBlockIndex] = cpuRes.BlocksRLERefs[i].size;;
+            }
 
             for (uint32_t i = 0; i < gpuReadbackRes.Counters[kzstdgpu_CounterIndex_Seq_Streams]; ++i)
             {
                 zstdgpu_ShaderEntry_DecompressSequences_MultiStream(srt, /* groupId */ i, /* threadId */ 0, /* streamsPerGroup */ 1);
+            }
+            // Compute prefix sum of block sizes
+            const uint32_t allBlockCount = cpuRes.Counters[kzstdgpu_CounterIndex_Blocks_CMP]
+                                         + cpuRes.Counters[kzstdgpu_CounterIndex_Blocks_RAW]
+                                         + cpuRes.Counters[kzstdgpu_CounterIndex_Blocks_RLE];
+
+            // FIXUP(pamartis): because after `DecompreSequences` execution 'BlockSizePrefix' contain actual size of the block,
+            // not the prefix (it's computed after `DecompreSequences`  on GPU) we update the prefix manually
+            uint32_t blockSizePrefix = 0;
+            {
+                for (uint32_t i = 0; i < allBlockCount; ++i)
+                {
+                    const uint32_t blockSize = cpuRes.BlockSizePrefix[i];
+                    blockSizePrefix += blockSize;
+                    cpuRes.BlockSizePrefix[i] = blockSizePrefix;
+                }
             }
         }
 
