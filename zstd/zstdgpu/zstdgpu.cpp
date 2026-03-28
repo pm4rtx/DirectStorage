@@ -1309,7 +1309,7 @@ static void zstdgpu_Dispatch32Bit(ID3D12GraphicsCommandList *cmdList, uint32_t t
 }
 
 #define zstdgpu_DispatchIndirect(cmdList, counterName) \
-    cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, req->resData.gpuOnly.DispatchArgs, kzstdgpu_DispatchSlot_##counterName * kzstdgpu_DispatchSlot_StrideInUInt32 * sizeof(uint32_t), NULL, 0)
+    cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, req->resData.gpuOnly.DispatchArgs, kzstdgpu_DispatchSlot_##counterName * kzstdgpu_DispatchSlot_StrideInUInt32 * sizeof(uint32_t) + sizeof(uint32_t), NULL, 0)
 
 void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandList *cmdList)
 {
@@ -1626,6 +1626,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         d3d12aid_ComputeRsPs_Set(&req->UpdateDispatchArgs, cmdList);
         cmdList->SetComputeRootUnorderedAccessView(0, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.DispatchArgs->GetGPUVirtualAddress());
+        cmdList->SetComputeRootUnorderedAccessView(2, req->resData.gpuOnly.DispatchCnts->GetGPUVirtualAddress());
         ZSTDGPU_KERNEL_SCOPE(UpdateDispatchArgs, cmdList,
             cmdList->Dispatch(1, 1, 1);
         );
@@ -1643,13 +1644,14 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootUnorderedAccessView(3, req->resData.gpuOnly.LitGroupEndPerHuffmanTable->GetGPUVirtualAddress() + req->zstdCmpBlockCount * sizeof(uint32_t));
         cmdList->SetComputeRootUnorderedAccessView(4, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(5, req->resData.gpuOnly.DispatchArgs->GetGPUVirtualAddress());
-        cmdList->SetComputeRoot32BitConstant(6, req->zstdCmpBlockCount, 0);
+        cmdList->SetComputeRootUnorderedAccessView(6, req->resData.gpuOnly.DispatchCnts->GetGPUVirtualAddress());
+        cmdList->SetComputeRoot32BitConstant(7, req->zstdCmpBlockCount, 0);
 #if 0
         // NOTE(pamartis): Use this pass to with DecompressLiterals kernel
-        cmdList->SetComputeRoot32BitConstant(6, kzstdgpu_TgSizeX_DecompressLiterals, 1);
+        cmdList->SetComputeRoot32BitConstant(7, kzstdgpu_TgSizeX_DecompressLiterals, 1);
 #else
         // NOTE(pamartis): Use this path to with DecompressLiterals_LdsStoreCache* kernels
-        cmdList->SetComputeRoot32BitConstant(6, req->DecompressLiterals_LdsStoreCache_StreamsPerGroup, 1);
+        cmdList->SetComputeRoot32BitConstant(7, req->DecompressLiterals_LdsStoreCache_StreamsPerGroup, 1);
 #endif
         ZSTDGPU_KERNEL_SCOPE(ComputePrefixSum, cmdList,
             cmdList->Dispatch(ZSTDGPU_TG_COUNT(req->zstdCmpBlockCount, kzstdgpu_TgSizeX_PrefixSum_LiteralCount), 1, 1);
@@ -1660,14 +1662,17 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     if (req->zstdCmpBlockCount > 0)
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier with Resources for [Init FSE Table] and [Group Lilteral Streams]");
-        D3D12_RESOURCE_BARRIER barriers[13];
+        D3D12_RESOURCE_BARRIER barriers[14];
         uint32_t bc = 0;
         // last written by [Update Dispatch Args] and [Compute `Per-Huffman Table` Literal Stream Count Prefix]
         // next read by [Group Lilteral Streams] and [Init FSE Table] and [Decompress Literals]
         setResourceUavToSrvCopyIndirectSync(barriers, bc ++, req->resData.gpuOnly.Counters);
         // last written by [Update Dispatch Args] and [Compute `Per-Huffman Table` Literal Stream Count Prefix]
-        // next read by ExecuteIndirect calls
+        // next read by ExecuteIndirect calls as argument buffer
         setResourceState(barriers, bc ++, req->resData.gpuOnly.DispatchArgs, UNORDERED_ACCESS, INDIRECT_ARGUMENT);
+        // last written by [Update Dispatch Args] and [Compute `Per-Huffman Table` Literal Stream Count Prefix]
+        // next read by ExecuteIndirect calls as count buffer
+        setResourceState(barriers, bc ++, req->resData.gpuOnly.DispatchCnts, UNORDERED_ACCESS, INDIRECT_ARGUMENT);
         // last written by [Parse Compressed Blocks]
         // next read by [Init FSE Table]
         // CAN MOVE EARLIER

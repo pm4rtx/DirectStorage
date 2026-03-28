@@ -236,6 +236,8 @@
 #   endif
 #endif
 
+static const uint32_t kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2 = 15;
+
 static const uint32_t kzstdgpu_MaxCount_BlockSizeBits   = 17u;
 
 static const uint32_t kzstdgpu_MaxCount_LiteralBytes    = 1u << kzstdgpu_MaxCount_BlockSizeBits;
@@ -332,7 +334,15 @@ static const uint32_t kzstdgpu_DispatchSlot_HUF_WgtStreams               = 7;
 static const uint32_t kzstdgpu_DispatchSlot_DecompressLiterals           = 8;
 static const uint32_t kzstdgpu_DispatchSlot_DecompressSequences          = 9;
 static const uint32_t kzstdgpu_DispatchSlot_Count                        = 10;
-static const uint32_t kzstdgpu_DispatchSlot_StrideInUInt32               = 3;
+
+#if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
+static const uint32_t kzstdgpu_DispatchSlot_CmdsPerSlot                  = 1;
+#else
+static const uint32_t kzstdgpu_DispatchSlot_CmdsPerSlot                  = 2;
+#endif
+
+static const uint32_t kzstdgpu_DispatchSlot_CmdStrideInUInt32            = 4;  // tgOffset, X, Y, Z
+static const uint32_t kzstdgpu_DispatchSlot_StrideInUInt32               = kzstdgpu_DispatchSlot_CmdsPerSlot * kzstdgpu_DispatchSlot_CmdStrideInUInt32;  // 8
 
 // NOTE(pamartis):
 //      We use macro here to make sure we can use them to compile-out
