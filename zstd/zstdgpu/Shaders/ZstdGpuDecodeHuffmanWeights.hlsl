@@ -36,8 +36,10 @@ ZSTDGPU_DECODE_HUFFMAN_WEIGHTS_SRT()
 
 [RootSignature("DescriptorTable(SRV(t0, numDescriptors=3), UAV(u0, numDescriptors=2)), RootConstants(b0, num32BitConstants=3)")]
 [numthreads(kzstdgpu_TgSizeX_DecodeHuffmanWeights, 1, 1)]
-void main(uint i : SV_DispatchThreadId)
+void main(uint2 groupId2 : SV_GroupID, uint32_t i : SV_GroupThreadId)
 {
+    i += zstdgpu_ConvertTo32BitGroupId(groupId2, Constants.tgOffset) * kzstdgpu_TgSizeX_DecodeHuffmanWeights;
+
     zstdgpu_DecodeHuffmanWeights_SRT srt;
     #include "../zstdgpu_srt_decl_copy.h"
     ZSTDGPU_DECODE_HUFFMAN_WEIGHTS_SRT()

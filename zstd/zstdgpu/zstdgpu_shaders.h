@@ -46,6 +46,18 @@ static void zstdgpu_TypedStoreU16(ZSTDGPU_RW_TYPED_BUFFER(uint32_t, uint16_t) in
 #endif
 }
 
+#ifdef __hlsl_dx_compiler
+static uint32_t zstdgpu_ConvertTo32BitGroupId(uint32_t2 groupId, uint32_t tgOffset)
+{
+#if defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
+    // NOTE(pamartis): tgOffset is always zero and groupId.x contains 32-bit value
+    return groupId.x;
+#else
+    return tgOffset + ((groupId.y << kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2) + groupId.x);
+#endif
+}
+#endif
+
 static void zstdgpu_EmitDispatch(ZSTDGPU_RW_BUFFER(uint32_t) dispatchArgs, ZSTDGPU_RW_BUFFER(uint32_t) dispatchCnts, uint32_t slot, uint32_t elemCount, uint32_t elemsPerTGroup)
 {
     const uint32_t tgCount = ZSTDGPU_TG_COUNT(elemCount, elemsPerTGroup);

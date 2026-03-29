@@ -34,8 +34,10 @@ ConstantBuffer<Consts> Constants : register(b0);
 
 [RootSignature("DescriptorTable(SRV(t0, numDescriptors=5), UAV(u0, numDescriptors=2)), RootConstants(b0, num32BitConstants=1)")]
 [numthreads(kzstdgpu_TgSizeX_DecompressHuffmanWeights, 1, 1)]
-void main(uint i : SV_DispatchThreadId)
+void main(uint2 groupId : SV_GroupID, uint32_t i : SV_GroupThreadId)
 {
+    i += zstdgpu_ConvertTo32BitGroupId(groupId, Constants.tgOffset) * kzstdgpu_TgSizeX_DecompressHuffmanWeights;
+
     zstdgpu_DecompressHuffmanWeights_SRT srt;
 
     #include "../zstdgpu_srt_decl_copy.h"

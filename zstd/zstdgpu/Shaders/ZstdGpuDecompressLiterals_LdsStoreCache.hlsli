@@ -72,8 +72,10 @@ groupshared uint32_t GS_Lds[kzstdgpu_DecompressLiterals_LdsStoreCache_LdsSize];
 
 [RootSignature("DescriptorTable(SRV(t0, numDescriptors=9), UAV(u0, numDescriptors=2)), RootConstants(b0, num32BitConstants=2)")]
 [numthreads(kzstdgpu_TgSizeX_DecompressLiterals_LdsStoreCache, 1, 1)]
-void main(uint groupId : SV_GroupId, uint i : SV_GroupThreadId)
+void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {
+    const uint32_t groupId = zstdgpu_ConvertTo32BitGroupId(groupId2, Constants.tgOffset);
+
     zstdgpu_DecompressLiterals_SRT srt;
 
     #include "../zstdgpu_srt_decl_copy.h"

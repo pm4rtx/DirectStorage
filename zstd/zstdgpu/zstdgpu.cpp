@@ -396,6 +396,14 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
 #undef ZSTDGPU_KERNEL
 };
 
+#define ZSTDGPU_DISPATCH32_CMD_SIG_LIST()                       \
+    ZSTDGPU_DISPATCH32_CMD_SIG(DecodeHuffmanWeights     , 1)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(DecompressHuffmanWeights , 1)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(DecompressLiterals       , 1)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(GroupCompressedLiterals  , 4)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(InitFseTable             , 1)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(InitHuffmanTable         , 1)
+
 #define ZSTDGPU_RUNTIME_KERNEL_LIST_SHARED()        \
     ZSTDGPU_KERNEL(ComputeDestSequenceOffsets)      \
     ZSTDGPU_KERNEL(ComputePrefixSum)                \
@@ -468,6 +476,10 @@ struct zstdgpu_PersistentContextImpl
     ID3D12Device            *device;
     ID3D12CommandSignature  *dispatchCmdSig;
 
+    #define ZSTDGPU_DISPATCH32_CMD_SIG(name, rootParamIdx) ID3D12CommandSignature *name##_CmdSig;
+        ZSTDGPU_DISPATCH32_CMD_SIG_LIST()
+    #undef ZSTDGPU_DISPATCH32_CMD_SIG
+
     #define ZSTDGPU_KERNEL(name) d3d12aid_ComputeRsPs name;
         ZSTDGPU_RUNTIME_KERNEL_LIST()
     #undef ZSTDGPU_KERNEL
@@ -488,6 +500,10 @@ struct zstdgpu_PerRequestContextImpl
     void                    *thisMemoryBlock;
     ID3D12Device            *device;
     ID3D12CommandSignature  *dispatchCmdSig;
+
+    #define ZSTDGPU_DISPATCH32_CMD_SIG(name, rootParamIdx) ID3D12CommandSignature *name##_CmdSig;
+        ZSTDGPU_DISPATCH32_CMD_SIG_LIST()
+    #undef ZSTDGPU_DISPATCH32_CMD_SIG
 
     #define ZSTDGPU_KERNEL(name) d3d12aid_ComputeRsPs name;
         ZSTDGPU_RUNTIME_KERNEL_LIST()
@@ -566,15 +582,23 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
         context->device = device;
         device->AddRef();
 
-        D3D12_INDIRECT_ARGUMENT_DESC dispatchArgDesc;
-        dispatchArgDesc.Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+        D3D12_INDIRECT_ARGUMENT_DESC dispatchArgDesc[2];
+        dispatchArgDesc[0].Type = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
 
-        D3D12_COMMAND_SIGNATURE_DESC dispatchCmdSigDesc;
-        dispatchCmdSigDesc.ByteStride           = sizeof(uint32_t) * 3;
-        dispatchCmdSigDesc.NumArgumentDescs     = 1;
-        dispatchCmdSigDesc.pArgumentDescs       = &dispatchArgDesc;
-        dispatchCmdSigDesc.NodeMask             = 0x1;
-        D3D12AID_CHECK(device->CreateCommandSignature(&dispatchCmdSigDesc, NULL, D3D12AID_IID_PPV_ARGS(&context->dispatchCmdSig)));
+        D3D12_COMMAND_SIGNATURE_DESC cmdSigDesc;
+        cmdSigDesc.ByteStride       = sizeof(uint32_t) * 3;
+        cmdSigDesc.NumArgumentDescs = 1;
+        cmdSigDesc.pArgumentDescs   = dispatchArgDesc;
+        cmdSigDesc.NodeMask         = 0x1;
+        D3D12AID_CHECK(device->CreateCommandSignature(&cmdSigDesc, NULL, D3D12AID_IID_PPV_ARGS(&context->dispatchCmdSig)));
+
+        dispatchArgDesc[0].Type                              = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
+        dispatchArgDesc[0].Constant.DestOffsetIn32BitValues  = 0;
+        dispatchArgDesc[0].Constant.Num32BitValuesToSet      = 1;
+        dispatchArgDesc[1].Type                              = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
+
+        cmdSigDesc.ByteStride        = sizeof(uint32_t) * kzstdgpu_DispatchSlot_CmdStrideInUInt32;
+        cmdSigDesc.NumArgumentDescs  = 2;
 
         #define ZSTDGPU_KERNEL_GET(name) &kzstdgpu_CompiledShaders[kzstdgpu_CompiledShaderId_##name];
         #define ZSTDGPU_KERNEL_MAP(runtime, compiled) shader##runtime = ZSTDGPU_KERNEL_GET(compiled)
@@ -655,6 +679,14 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
             ZSTDGPU_RUNTIME_KERNEL_LIST()
         #undef ZSTDGPU_KERNEL
 
+        /** NOTE(pamartis): generate CommandSignatures through macro list specifying what kernels/root signatures need command signatures for indirect dispatch */
+        #define ZSTDGPU_DISPATCH32_CMD_SIG(name, rootParamIdx)              \
+            dispatchArgDesc[0].Constant.RootParameterIndex = rootParamIdx;  \
+            D3D12AID_CHECK(device->CreateCommandSignature(&cmdSigDesc, context->name.rs, D3D12AID_IID_PPV_ARGS(&context->name##_CmdSig)));
+
+            ZSTDGPU_DISPATCH32_CMD_SIG_LIST()
+        #undef ZSTDGPU_DISPATCH32_CMD_SIG
+
         *outPersistentContext = context;
         return ZSTDGPU_ENUM_CONST(StatusSuccess);
     }
@@ -674,6 +706,11 @@ ZSTDGPU_ENUM(Status) zstdgpu_DestroyPersistentContext(void **outMemoryBlock, uin
         #undef ZSTDGPU_KERNEL
 
         D3D12AID_SAFE_RELEASE(inPersistentContext->dispatchCmdSig);
+
+        #define ZSTDGPU_DISPATCH32_CMD_SIG(name, rootParamIdx) D3D12AID_SAFE_RELEASE(inPersistentContext->name##_CmdSig);
+            ZSTDGPU_DISPATCH32_CMD_SIG_LIST()
+        #undef ZSTDGPU_DISPATCH32_CMD_SIG
+
         D3D12AID_SAFE_RELEASE(inPersistentContext->device);
 
         if (NULL != outMemoryBlock)
@@ -709,6 +746,12 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePerRequestContext(zstdgpu_PerRequestContext *
 
         context->dispatchCmdSig = persistentContext->dispatchCmdSig;
         context->dispatchCmdSig->AddRef();
+
+        #define ZSTDGPU_DISPATCH32_CMD_SIG(name, rootParamIdx)                      \
+            context->name##_CmdSig = persistentContext->name##_CmdSig;    \
+            context->name##_CmdSig->AddRef();
+            ZSTDGPU_DISPATCH32_CMD_SIG_LIST()
+        #undef ZSTDGPU_DISPATCH32_CMD_SIG
 
         /** NOTE(pamartis): generate PipelineState / RootSignature initialisation through macro list */
         #define ZSTDGPU_KERNEL(name)                \
@@ -787,6 +830,11 @@ ZSTDGPU_ENUM(Status) zstdgpu_DestroyPerRequestContext(void **outMemoryBlock, uin
         #undef ZSTDGPU_KERNEL
 
         D3D12AID_SAFE_RELEASE(inPerRequestContext->dispatchCmdSig);
+
+        #define ZSTDGPU_DISPATCH32_CMD_SIG(name, rootParamIdx) D3D12AID_SAFE_RELEASE(inPerRequestContext->name##_CmdSig);
+            ZSTDGPU_DISPATCH32_CMD_SIG_LIST()
+        #undef ZSTDGPU_DISPATCH32_CMD_SIG
+
         D3D12AID_SAFE_RELEASE(inPerRequestContext->device);
 
         if (NULL != outMemoryBlock)
@@ -1308,8 +1356,8 @@ static void zstdgpu_Dispatch32Bit(ID3D12GraphicsCommandList *cmdList, uint32_t t
 #endif
 }
 
-#define zstdgpu_DispatchIndirect(cmdList, counterName) \
-    cmdList->ExecuteIndirect(req->dispatchCmdSig, 1, req->resData.gpuOnly.DispatchArgs, kzstdgpu_DispatchSlot_##counterName * kzstdgpu_DispatchSlot_StrideInUInt32 * sizeof(uint32_t) + sizeof(uint32_t), NULL, 0)
+#define zstdgpu_DispatchIndirect(cmdList, kernelName, counterName) \
+    cmdList->ExecuteIndirect(req->kernelName##_CmdSig, kzstdgpu_DispatchSlot_CmdsPerSlot, req->resData.gpuOnly.DispatchArgs, kzstdgpu_DispatchSlot_##counterName * kzstdgpu_DispatchSlot_StrideInUInt32 * sizeof(uint32_t), req->resData.gpuOnly.DispatchCnts, kzstdgpu_DispatchSlot_##counterName * sizeof(uint32_t));
 
 void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandList *cmdList)
 {
@@ -1721,7 +1769,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootUnorderedAccessView(3, req->resData.gpuOnly.LitStreamRemap->GetGPUVirtualAddress());
 
         ZSTDGPU_KERNEL_SCOPE(GroupCompressedLiterals, cmdList,
-            zstdgpu_DispatchIndirect(cmdList, GroupCompressedLiterals);
+            zstdgpu_DispatchIndirect(cmdList, GroupCompressedLiterals, GroupCompressedLiterals);
         );
 
         PIXEndEvent(cmdList);
@@ -1743,7 +1791,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 1);
             cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartHufW(0, req->zstdCmpBlockCount), 2);
             cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_HufW, 3);
-            zstdgpu_DispatchIndirect(cmdList, FseHufW);
+            zstdgpu_DispatchIndirect(cmdList, InitFseTable, FseHufW);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Literal Lengths");
@@ -1751,7 +1799,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 1);
             cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartLLen(0, req->zstdCmpBlockCount), 2);
             cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_LLen, 3);
-            zstdgpu_DispatchIndirect(cmdList, FseLLen);
+            zstdgpu_DispatchIndirect(cmdList, InitFseTable, FseLLen);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Offsets");
@@ -1759,7 +1807,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 1);
             cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartOffs(0, req->zstdCmpBlockCount), 2);
             cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_Offs, 3);
-            zstdgpu_DispatchIndirect(cmdList, FseOffs);
+            zstdgpu_DispatchIndirect(cmdList, InitFseTable, FseOffs);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Match Lengths");
@@ -1767,7 +1815,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 1);
             cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartMLen(0, req->zstdCmpBlockCount), 2);
             cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_MLen, 3);
-            zstdgpu_DispatchIndirect(cmdList, FseMLen);
+            zstdgpu_DispatchIndirect(cmdList, InitFseTable, FseMLen);
             PIXEndEvent(cmdList);
             PIXEndEvent(cmdList);
         });
@@ -1795,7 +1843,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         BIND_RS_PS_SRT(DecompressHuffmanWeights);
 
         ZSTDGPU_KERNEL_SCOPE(DecompressHuffmanWeights, cmdList,
-            zstdgpu_DispatchIndirect(cmdList, DecompressHuffmanWeights);
+            zstdgpu_DispatchIndirect(cmdList, DecompressHuffmanWeights, DecompressHuffmanWeights);
         );
         PIXEndEvent(cmdList);
     }
@@ -1808,7 +1856,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRoot32BitConstant(1, req->resInfo.CompressedData_ByteSize, 2);
 
         ZSTDGPU_KERNEL_SCOPE(DecodeHuffmanWeights, cmdList,
-            zstdgpu_DispatchIndirect(cmdList, DecodeHuffmanWeights);
+            zstdgpu_DispatchIndirect(cmdList, DecodeHuffmanWeights, DecodeHuffmanWeights);
         );
         PIXEndEvent(cmdList);
     }
@@ -1838,14 +1886,14 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Path: FSE-compressed Huffman Weights]");
             {
                 cmdList->SetComputeRoot32BitConstant(1, /** HuffmaTableIndexBase*/0, 1);
-                zstdgpu_DispatchIndirect(cmdList, FseHufW);
+                zstdgpu_DispatchIndirect(cmdList, InitHuffmanTable, FseHufW);
             }
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Path: Uncompressed Huffman Weights]");
             {
                 cmdList->SetComputeRoot32BitConstant(1, /** HuffmaTableIndexBase = zstdCmpBlockCount meaning indices are reversed */req->zstdCmpBlockCount, 1);
-                zstdgpu_DispatchIndirect(cmdList, HUF_WgtStreams);
+                zstdgpu_DispatchIndirect(cmdList, InitHuffmanTable, HUF_WgtStreams);
             }
             PIXEndEvent(cmdList);
         });
@@ -1873,7 +1921,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 1);
 
         ZSTDGPU_KERNEL_SCOPE(DecompressLiterals, cmdList,
-            zstdgpu_DispatchIndirect(cmdList, DecompressLiterals);
+            zstdgpu_DispatchIndirect(cmdList, DecompressLiterals, DecompressLiterals);
         );
         PIXEndEvent(cmdList);
     }

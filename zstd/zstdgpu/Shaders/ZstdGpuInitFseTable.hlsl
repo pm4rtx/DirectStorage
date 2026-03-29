@@ -67,8 +67,10 @@ groupshared uint32_t Lds[kzstdgpu_InitFseTable_Experimental_LdsSize];
 
 [RootSignature("DescriptorTable(SRV(t0, numDescriptors = 2), UAV(u0, numDescriptors=1)), RootConstants(b0, num32BitConstants=4)")]
 [numthreads(kzstdgpu_TgSizeX_InitFseTable, 1, 1)]
-void main(uint32_t groupId : SV_GroupId, uint32_t i : SV_GroupThreadId)
+void main(uint2 groupId2 : SV_GroupId, uint32_t i : SV_GroupThreadId)
 {
+    const uint32_t groupId = zstdgpu_ConvertTo32BitGroupId(groupId2, Constants.tgOffset);
+
     zstdgpu_InitFseTable_SRT srt;
 
     #include "../zstdgpu_srt_decl_copy.h"

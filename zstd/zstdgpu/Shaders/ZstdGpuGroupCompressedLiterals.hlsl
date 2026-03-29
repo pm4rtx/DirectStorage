@@ -16,7 +16,7 @@
  * Author(s):   Pavel Martishevsky (pamartis@microsoft.com)
  */
 
-#include "../zstdgpu_structs.h"
+#include "../zstdgpu_shaders.h"
 
 StructuredBuffer<uint32_t>                              ZstdLitStreamCountPrefix    : register(t0);
 StructuredBuffer<zstdgpu_CompressedLiteralHuffmanBucket> ZstdLitStreamHuffmanBuckets : register(t1);
@@ -32,8 +32,10 @@ ConstantBuffer<Consts> Constants : register(b0);
 
 [RootSignature("SRV(t0), SRV(t1), SRV(t2), UAV(u0), RootConstants(b0, num32BitConstants=1)")]
 [numthreads(32, 1, 1)]
-void main(uint litStreamId : SV_DispatchThreadId)
+void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {
+    const uint32_t groupId = zstdgpu_ConvertTo32BitGroupId(groupId2, Constants.tgOffset);
+    const uint32_t litStreamId = groupId * 32 + i;
     if (litStreamId >= ZstdCounters[0].HUF_Streams)
         return;
 

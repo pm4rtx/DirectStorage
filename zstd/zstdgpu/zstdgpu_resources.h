@@ -590,6 +590,13 @@ static void zstdgpu_ResourceDataGpu_Init_GpuOnly(zstdgpu_ResourceDataGpu *outRes
     ID3D12Heap *heap = outResData->gpuOnly_Heap[stageIndex];
     if (stageIndex == 0)
     {
+#if defined(_GAMING_XBOX)
+        bufDesc.Width = info->DispatchArgs_ByteSizeInternal;
+        bufDesc.Flags |= D3D12XBOX_RESOURCE_FLAG_ALLOW_INDIRECT_BUFFER;
+        outResData->gpuOnly.DispatchArgs = d3d12aid_Resource_CreateCommitted_WithHeapTypeAndFlags(device, &bufDesc, D3D12_HEAP_TYPE_DEFAULT, D3D12XBOX_HEAP_FLAG_ALLOW_INDIRECT_BUFFERS);
+        bufDesc.Flags &= ~D3D12XBOX_RESOURCE_FLAG_ALLOW_INDIRECT_BUFFER;
+#endif
+
         ZSTDGPU_ALL_BUFFERS_LIST_STAGE_0()
     }
     else if (stageIndex == 1)
