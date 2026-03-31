@@ -335,7 +335,11 @@ static const uint32_t kzstdgpu_DispatchSlot_DecompressLiterals           = 8;
 static const uint32_t kzstdgpu_DispatchSlot_DecompressSequences          = 9;
 static const uint32_t kzstdgpu_DispatchSlot_FinaliseSequenceOffsets      = 10;
 static const uint32_t kzstdgpu_DispatchSlot_PrefixSequenceOffsets        = 11;
-static const uint32_t kzstdgpu_DispatchSlot_Count                        = 12;
+static const uint32_t kzstdgpu_DispatchSlot_ComputePrefixSum             = 12;
+static const uint32_t kzstdgpu_DispatchSlot_PrefixBlockSizes             = 13;
+static const uint32_t kzstdgpu_DispatchSlot_MemcpyRAW                    = 14;
+static const uint32_t kzstdgpu_DispatchSlot_MemsetRLE                    = 15;
+static const uint32_t kzstdgpu_DispatchSlot_Count                        = 16;
 
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
 static const uint32_t kzstdgpu_DispatchSlot_CmdsPerSlot                  = 1;

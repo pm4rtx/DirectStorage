@@ -21,6 +21,7 @@
 
 struct Consts
 {
+    uint32_t tgOffset;
     uint32_t elemToPrefixCount;
     uint32_t literalsPerGroup;
 };
@@ -40,10 +41,11 @@ RWStructuredBuffer<zstdgpu_Counters>  ZstdCounters                        : regi
 RWStructuredBuffer<uint32_t>          ZstdDispatchArgs                    : register(u5);
 RWStructuredBuffer<uint32_t>          ZstdDispatchCnts                    : register(u6);
 
-[RootSignature("UAV(u0), UAV(u1), UAV(u2), UAV(u3), UAV(u4), UAV(u5), UAV(u6), RootConstants(b0, num32BitConstants=2)")]
+[RootSignature("UAV(u0), UAV(u1), UAV(u2), UAV(u3), UAV(u4), UAV(u5), UAV(u6), RootConstants(b0, num32BitConstants=3)")]
 [numthreads(kzstdgpu_TgSizeX_PrefixSum_LiteralCount, 1, 1)]
-void main(uint i : SV_DispatchThreadId)
+void main(uint2 groupId : SV_GroupId, uint threadId : SV_GroupThreadId)
 {
+    const uint32_t i = zstdgpu_ConvertTo32BitGroupId(groupId, Constants.tgOffset) * kzstdgpu_TgSizeX_PrefixSum_LiteralCount + threadId;
     const uint32_t blockSize = min(kzstdgpu_TgSizeX_PrefixSum_LiteralCount, WaveGetLaneCount());
     const uint32_t thisBlockIndex = WaveReadLaneFirst(i / blockSize);
     const uint32_t thisLocalIndex = i % blockSize;

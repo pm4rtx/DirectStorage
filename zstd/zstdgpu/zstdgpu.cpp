@@ -405,7 +405,10 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_DISPATCH32_CMD_SIG(GroupCompressedLiterals  , 4)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitFseTable             , 1)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitHuffmanTable         , 1)    \
-    ZSTDGPU_DISPATCH32_CMD_SIG(PrefixSequenceOffsets    , 10)
+    ZSTDGPU_DISPATCH32_CMD_SIG(MemsetMemcpy             , 5)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(PrefixSequenceOffsets    , 10)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(PrefixSum                , 2)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(ComputePrefixSum         , 7)
 
 #define ZSTDGPU_RUNTIME_KERNEL_LIST_SHARED()        \
     ZSTDGPU_KERNEL(ComputeDestSequenceOffsets)      \
@@ -1452,8 +1455,14 @@ void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
 
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[PrefixSum :: Block Counts]");
         d3d12aid_ComputeRsPs_Set(&req->PrefixSum, cmdList);
-        cmdList->SetComputeRoot32BitConstant(2, req->zstdFrameCount, 0);
-        cmdList->SetComputeRoot32BitConstant(2, 0 /** outputInclusive */, 1);
+        /**
+         *  TODO(pamartis): This is `tgOffset` that should be set up by EmitDispatch on GPU
+         *  but because we haven't converted these dispatches to 32-bit indirect dispatches yet,
+         *  we setup the constant that shader expects
+         */
+        cmdList->SetComputeRoot32BitConstant(2, 0 /** tgOffset */, 0);
+        cmdList->SetComputeRoot32BitConstant(2, req->zstdFrameCount, 1);
+        cmdList->SetComputeRoot32BitConstant(2, 0 /** outputInclusive */, 2);
 
         ZSTDGPU_KERNEL_SCOPE(PrefixSum, cmdList,
         {
@@ -1697,16 +1706,16 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootUnorderedAccessView(4, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(5, req->resData.gpuOnly.DispatchArgs->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(6, req->resData.gpuOnly.DispatchCnts->GetGPUVirtualAddress());
-        cmdList->SetComputeRoot32BitConstant(7, req->zstdCmpBlockCount, 0);
+        cmdList->SetComputeRoot32BitConstant(7, req->zstdCmpBlockCount, 1);
 #if 0
         // NOTE(pamartis): Use this pass to with DecompressLiterals kernel
-        cmdList->SetComputeRoot32BitConstant(7, kzstdgpu_TgSizeX_DecompressLiterals, 1);
+        cmdList->SetComputeRoot32BitConstant(7, kzstdgpu_TgSizeX_DecompressLiterals, 2);
 #else
         // NOTE(pamartis): Use this path to with DecompressLiterals_LdsStoreCache* kernels
-        cmdList->SetComputeRoot32BitConstant(7, req->DecompressLiterals_LdsStoreCache_StreamsPerGroup, 1);
+        cmdList->SetComputeRoot32BitConstant(7, req->DecompressLiterals_LdsStoreCache_StreamsPerGroup, 2);
 #endif
         ZSTDGPU_KERNEL_SCOPE(ComputePrefixSum, cmdList,
-            cmdList->Dispatch(ZSTDGPU_TG_COUNT(req->zstdCmpBlockCount, kzstdgpu_TgSizeX_PrefixSum_LiteralCount), 1, 1);
+            zstdgpu_DispatchIndirect(cmdList, ComputePrefixSum, ComputePrefixSum);
         );
         PIXEndEvent(cmdList);
     }
@@ -1992,11 +2001,11 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
 
         cmdList->SetComputeRootUnorderedAccessView(0, req->resData.gpuOnly.BlockSizePrefix->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.BlockSizePrefix->GetGPUVirtualAddress() + allBlockCount * sizeof(uint32_t));
-        cmdList->SetComputeRoot32BitConstant(2, allBlockCount, 0);
-        cmdList->SetComputeRoot32BitConstant(2, 1 /** outputInclusive */, 1);
+        cmdList->SetComputeRoot32BitConstant(2, allBlockCount, 1);
+        cmdList->SetComputeRoot32BitConstant(2, 1 /** outputInclusive */, 2);
 
         ZSTDGPU_KERNEL_SCOPE(PrefixBlockSizes, cmdList,
-            cmdList->Dispatch(ZSTDGPU_TG_COUNT(allBlockCount, kzstdgpu_TgSizeX_PrefixSum), 1, 1);
+            zstdgpu_DispatchIndirect(cmdList, PrefixSum, PrefixBlockSizes);
         );
 
         PIXEndEvent(cmdList);
@@ -2080,11 +2089,11 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
                 cmdList->SetComputeRootShaderResourceView(2, req->resData.gpuOnly.PerFrameBlockSizesRAW->GetGPUVirtualAddress());
                 cmdList->SetComputeRootShaderResourceView(3, req->resData.gpuOnly.BlocksRAWRefs->GetGPUVirtualAddress());
                 cmdList->SetComputeRootShaderResourceView(4, req->resData.gpuOnly.GlobalBlockIndexPerRawBlock->GetGPUVirtualAddress());
-                cmdList->SetComputeRoot32BitConstant(5, req->zstdRawByteCount, 0);
-                cmdList->SetComputeRoot32BitConstant(5, req->zstdRawBlockCount, 1);
-                cmdList->SetComputeRoot32BitConstant(5, req->zstdFrameCount, 2);
-                cmdList->SetComputeRoot32BitConstant(5, 1 /* flags */, 3);
-                zstdgpu_Dispatch32Bit(cmdList, ZSTDGPU_TG_COUNT(req->zstdRawByteCount, kzstdgpu_TgSizeX_MemsetMemcpy), 5, 4);
+                cmdList->SetComputeRoot32BitConstant(5, req->zstdRawByteCount, 1);
+                cmdList->SetComputeRoot32BitConstant(5, req->zstdRawBlockCount, 2);
+                cmdList->SetComputeRoot32BitConstant(5, req->zstdFrameCount, 3);
+                cmdList->SetComputeRoot32BitConstant(5, 1 /* flags */, 4);
+                zstdgpu_DispatchIndirect(cmdList, MemsetMemcpy, MemcpyRAW);
             }
             if (req->zstdRleByteCount > 0)
             {
@@ -2092,11 +2101,11 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
                 cmdList->SetComputeRootShaderResourceView(2, req->resData.gpuOnly.PerFrameBlockSizesRLE->GetGPUVirtualAddress());
                 cmdList->SetComputeRootShaderResourceView(3, req->resData.gpuOnly.BlocksRLERefs->GetGPUVirtualAddress());
                 cmdList->SetComputeRootShaderResourceView(4, req->resData.gpuOnly.GlobalBlockIndexPerRleBlock->GetGPUVirtualAddress());
-                cmdList->SetComputeRoot32BitConstant(5, req->zstdRleByteCount, 0);
-                cmdList->SetComputeRoot32BitConstant(5, req->zstdRleBlockCount, 1);
-                cmdList->SetComputeRoot32BitConstant(5, req->zstdFrameCount, 2);
-                cmdList->SetComputeRoot32BitConstant(5, 0 /* flags */, 3);
-                zstdgpu_Dispatch32Bit(cmdList, ZSTDGPU_TG_COUNT(req->zstdRleByteCount, kzstdgpu_TgSizeX_MemsetMemcpy), 5, 4);
+                cmdList->SetComputeRoot32BitConstant(5, req->zstdRleByteCount, 1);
+                cmdList->SetComputeRoot32BitConstant(5, req->zstdRleBlockCount, 2);
+                cmdList->SetComputeRoot32BitConstant(5, req->zstdFrameCount, 3);
+                cmdList->SetComputeRoot32BitConstant(5, 0 /* flags */, 4);
+                zstdgpu_DispatchIndirect(cmdList, MemsetMemcpy, MemsetRLE);
             }
         });
         PIXEndEvent(cmdList);
