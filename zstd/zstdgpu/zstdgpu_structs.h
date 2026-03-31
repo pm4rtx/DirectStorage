@@ -348,8 +348,8 @@ static const uint32_t kzstdgpu_DispatchSlot_CmdsPerSlot                  = 1;
 static const uint32_t kzstdgpu_DispatchSlot_CmdsPerSlot                  = 2;
 #endif
 
-static const uint32_t kzstdgpu_DispatchSlot_CmdStrideInUInt32            = 4;  // tgOffset, X, Y, Z
-static const uint32_t kzstdgpu_DispatchSlot_StrideInUInt32               = kzstdgpu_DispatchSlot_CmdsPerSlot * kzstdgpu_DispatchSlot_CmdStrideInUInt32;  // 8
+static const uint32_t kzstdgpu_DispatchSlot_CmdStrideInUInt32            = 5;  // tgOffset, workItemCount, X, Y, Z
+static const uint32_t kzstdgpu_DispatchSlot_StrideInUInt32               = kzstdgpu_DispatchSlot_CmdsPerSlot * kzstdgpu_DispatchSlot_CmdStrideInUInt32;  // 10 (PC), 5 (Xbox)
 
 // NOTE(pamartis):
 //      We use macro here to make sure we can use them to compile-out

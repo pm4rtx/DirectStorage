@@ -20,6 +20,7 @@
 struct Consts
 {
     uint32_t tgOffset;
+    uint32_t workItemCount;
     uint32_t HuffmanTableBase;
 };
 
@@ -38,7 +39,7 @@ groupshared uint32_t GS_Lds[kzstdgpu_InitHuffmanTable_LdsSize];
 #define __XBOX_ENABLE_WAVE32 1
 #endif
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors=2), UAV(u0, numDescriptors=3)), RootConstants(b0, num32BitConstants=2)")]
+[RootSignature("DescriptorTable(SRV(t0, numDescriptors=2), UAV(u0, numDescriptors=3)), RootConstants(b0, num32BitConstants=3)")]
 [numthreads(kzstdgpu_TgSizeX_DecompressLiterals, 1, 1)]
 void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {

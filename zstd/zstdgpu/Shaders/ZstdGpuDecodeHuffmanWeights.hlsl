@@ -20,6 +20,7 @@
 struct Consts
 {
     uint32_t tgOffset;
+    uint32_t workItemCount;
     uint32_t ZstdCompressedBlockCount;
     uint32_t ZstdCompressedBufferSizeInBytes;
 };
@@ -34,7 +35,7 @@ ZSTDGPU_DECODE_HUFFMAN_WEIGHTS_SRT()
 #define __XBOX_ENABLE_WAVE32 1
 #endif
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors=3), UAV(u0, numDescriptors=2)), RootConstants(b0, num32BitConstants=3)")]
+[RootSignature("DescriptorTable(SRV(t0, numDescriptors=3), UAV(u0, numDescriptors=2)), RootConstants(b0, num32BitConstants=4)")]
 [numthreads(kzstdgpu_TgSizeX_DecodeHuffmanWeights, 1, 1)]
 void main(uint2 groupId2 : SV_GroupID, uint32_t i : SV_GroupThreadId)
 {

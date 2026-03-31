@@ -22,7 +22,7 @@
 struct Consts
 {
     uint32_t tgOffset;
-    uint32_t elemToPrefixCount;
+    uint32_t workItemCount;
     uint32_t literalsPerGroup;
 };
 
@@ -48,7 +48,7 @@ void main(uint2 groupId : SV_GroupId, uint threadId : SV_GroupThreadId)
     const uint32_t thisBlockIndex = WaveReadLaneFirst(i / blockSize);
     const uint32_t thisLocalIndex = i % blockSize;
 
-    if (i >= Constants.elemToPrefixCount)
+    if (i >= Constants.workItemCount)
         return;
 
     const uint32_t lastLocalIndex = WaveActiveCountBits(true) - 1u;
@@ -136,7 +136,7 @@ void main(uint2 groupId : SV_GroupId, uint threadId : SV_GroupThreadId)
 
     // NOTE(pamartis): the last thread in the dispatch writes its "inclusive" prefix sum because it's the total number of threadgroups
     // to be dispatched for literal decompression
-    if (i == Constants.elemToPrefixCount - 1)
+    if (i == Constants.workItemCount - 1)
     {
         ZstdCounters[0].DecompressLiteralsGroups = ZstdLitGroupCountToPrefix[i];
     }

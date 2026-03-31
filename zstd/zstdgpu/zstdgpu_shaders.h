@@ -64,10 +64,11 @@ static void zstdgpu_EmitDispatch(ZSTDGPU_RW_BUFFER(uint32_t) dispatchArgs, ZSTDG
     const uint32_t baseIdx = slot * kzstdgpu_DispatchSlot_StrideInUInt32;
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
     // dispatch 0: no problems with # of threadgroup per dimension, support 32-bit
-    dispatchArgs[baseIdx + 0] = 0;  // tgOffset
-    dispatchArgs[baseIdx + 1] = tgCount;
-    dispatchArgs[baseIdx + 2] = 1;
+    dispatchArgs[baseIdx + 0] = 0;          // tgOffset
+    dispatchArgs[baseIdx + 1] = elemCount;  // workItemCount
+    dispatchArgs[baseIdx + 2] = tgCount;
     dispatchArgs[baseIdx + 3] = 1;
+    dispatchArgs[baseIdx + 4] = 1;
     dispatchCnts[slot] = 1;
 #else
     const uint32_t tgCountY = tgCount >> kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2;
@@ -76,30 +77,34 @@ static void zstdgpu_EmitDispatch(ZSTDGPU_RW_BUFFER(uint32_t) dispatchArgs, ZSTDG
     if (tgCountY > 0)
     {
         // dispatch 0: most of threadgroups are launched via 2d dispatch with the maximal possible number of threadgroups per dimension
-        dispatchArgs[baseIdx + 0] = 0;  // tgOffset
-        dispatchArgs[baseIdx + 1] = 1u << kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2;
-        dispatchArgs[baseIdx + 2] = tgCountY;
-        dispatchArgs[baseIdx + 3] = 1;
+        dispatchArgs[baseIdx + 0] = 0;          // tgOffset
+        dispatchArgs[baseIdx + 1] = elemCount;  // workItemCount
+        dispatchArgs[baseIdx + 2] = 1u << kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2;
+        dispatchArgs[baseIdx + 3] = tgCountY;
+        dispatchArgs[baseIdx + 4] = 1;
 
         // dispatch 1: the remaining threadgroups are launched via 1d dispatch
-        dispatchArgs[baseIdx + 4] = tgCountY << kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2;  // tgOffset
-        dispatchArgs[baseIdx + 5] = tgCountX;
-        dispatchArgs[baseIdx + 6] = 1;
-        dispatchArgs[baseIdx + 7] = 1;
+        dispatchArgs[baseIdx + 5] = tgCountY << kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2;  // tgOffset
+        dispatchArgs[baseIdx + 6] = elemCount;  // workItemCount
+        dispatchArgs[baseIdx + 7] = tgCountX;
+        dispatchArgs[baseIdx + 8] = 1;
+        dispatchArgs[baseIdx + 9] = 1;
         dispatchCnts[slot] = 2;
     }
     else
     {
         // dispatch 0: all threadgroups fit into the limit of single dimension
-        dispatchArgs[baseIdx + 0] = 0;  // tgOffset
-        dispatchArgs[baseIdx + 1] = tgCount;
-        dispatchArgs[baseIdx + 2] = 1;
+        dispatchArgs[baseIdx + 0] = 0;          // tgOffset
+        dispatchArgs[baseIdx + 1] = elemCount;  // workItemCount
+        dispatchArgs[baseIdx + 2] = tgCount;
         dispatchArgs[baseIdx + 3] = 1;
+        dispatchArgs[baseIdx + 4] = 1;
         // dispatch 1: zeroed (unused but written)
-        dispatchArgs[baseIdx + 4] = 0;
         dispatchArgs[baseIdx + 5] = 0;
-        dispatchArgs[baseIdx + 6] = 1;
-        dispatchArgs[baseIdx + 7] = 1;
+        dispatchArgs[baseIdx + 6] = elemCount;  // workItemCount
+        dispatchArgs[baseIdx + 7] = 0;
+        dispatchArgs[baseIdx + 8] = 1;
+        dispatchArgs[baseIdx + 9] = 1;
         dispatchCnts[slot] = 1;
     }
 #endif

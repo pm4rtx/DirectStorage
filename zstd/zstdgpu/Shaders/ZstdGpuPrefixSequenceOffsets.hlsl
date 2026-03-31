@@ -20,6 +20,7 @@
 struct Consts
 {
     uint32_t tgOffset;
+    uint32_t workItemCount;
     uint32_t frameCount;
 };
 
@@ -50,7 +51,7 @@ StructuredBuffer<zstdgpu_Counters>     ZstdCounters                 : register(t
 #   define __XBOX_ENABLE_WAVE32 1
 #endif
 
-[RootSignature("UAV(u0), UAV(u1), UAV(u2), UAV(u3), UAV(u4), UAV(u5), SRV(t0), SRV(t1), SRV(t2), SRV(t3), RootConstants(b0, num32BitConstants=2)")]
+[RootSignature("UAV(u0), UAV(u1), UAV(u2), UAV(u3), UAV(u4), UAV(u5), SRV(t0), SRV(t1), SRV(t2), SRV(t3), RootConstants(b0, num32BitConstants=3)")]
 [numthreads(kzstdgpu_TgSizeX_PrefixSequenceOffsets, 1, 1)]
 void main(uint2 groupId : SV_GroupId, uint threadId : SV_GroupThreadId)
 {

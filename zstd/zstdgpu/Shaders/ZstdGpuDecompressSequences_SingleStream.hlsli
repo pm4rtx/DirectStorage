@@ -37,6 +37,7 @@
 struct Consts
 {
     uint32_t tgOffset;
+    uint32_t workItemCount;
 };
 
 ConstantBuffer<Consts> Constants : register(b0);
@@ -55,7 +56,7 @@ groupshared uint32_t Lds[kzstdgpu_DecompressSequences_SingleStream_LdsFseCache_L
 #   error 'kzstdgpu_TgSizeX_DecompressSequences_SingleStream' must be defined before including this '.hlsli'
 #endif
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors=6), UAV(u0, numDescriptors=7)), RootConstants(b0, num32BitConstants=1)")]
+[RootSignature("DescriptorTable(SRV(t0, numDescriptors=6), UAV(u0, numDescriptors=7)), RootConstants(b0, num32BitConstants=2)")]
 [numthreads(kzstdgpu_TgSizeX_DecompressSequences_SingleStream, 1, 1)]
 void main(uint32_t2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {

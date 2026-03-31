@@ -26,11 +26,12 @@ RWStructuredBuffer<uint32_t>                            ZstdLitStreamMap        
 struct Consts
 {
     uint32_t tgOffset;
+    uint32_t workItemCount;
 };
 
 ConstantBuffer<Consts> Constants : register(b0);
 
-[RootSignature("SRV(t0), SRV(t1), SRV(t2), UAV(u0), RootConstants(b0, num32BitConstants=1)")]
+[RootSignature("SRV(t0), SRV(t1), SRV(t2), UAV(u0), RootConstants(b0, num32BitConstants=2)")]
 [numthreads(32, 1, 1)]
 void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {

@@ -23,7 +23,7 @@
 struct Consts
 {
     uint32_t tgOffset;
-    uint32_t compressedBlockCount;
+    uint32_t workItemCount;
     uint32_t compressedBufferSizeInBytes;
     uint32_t frameCount;
 };
@@ -49,7 +49,7 @@ void main(uint2 groupId : SV_GroupId, uint threadId : SV_GroupThreadId)
     ZSTDGPU_PARSE_COMPRESSED_BLOCKS_SRT()
     #include "../zstdgpu_srt_decl_undef.h"
 
-    srt.compressedBlockCount        = Constants.compressedBlockCount;
+    srt.compressedBlockCount        = Constants.workItemCount;
     srt.compressedBufferSizeInBytes = Constants.compressedBufferSizeInBytes;
     srt.frameCount                  = Constants.frameCount;
 

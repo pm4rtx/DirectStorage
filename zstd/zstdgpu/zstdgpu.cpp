@@ -601,7 +601,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
 
         dispatchArgDesc[0].Type                              = D3D12_INDIRECT_ARGUMENT_TYPE_CONSTANT;
         dispatchArgDesc[0].Constant.DestOffsetIn32BitValues  = 0;
-        dispatchArgDesc[0].Constant.Num32BitValuesToSet      = 1;
+        dispatchArgDesc[0].Constant.Num32BitValuesToSet      = 2;
         dispatchArgDesc[1].Type                              = D3D12_INDIRECT_ARGUMENT_TYPE_DISPATCH;
 
         cmdSigDesc.ByteStride        = sizeof(uint32_t) * kzstdgpu_DispatchSlot_CmdStrideInUInt32;
@@ -1466,7 +1466,7 @@ void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
          *  we setup the constant that shader expects
          */
         cmdList->SetComputeRoot32BitConstant(2, 0 /** tgOffset */, 0);
-        cmdList->SetComputeRoot32BitConstant(2, req->zstdFrameCount, 1);
+        cmdList->SetComputeRoot32BitConstant(2, req->zstdFrameCount /** workItemCount */, 1);
         cmdList->SetComputeRoot32BitConstant(2, 0 /** outputInclusive */, 2);
 
         ZSTDGPU_KERNEL_SCOPE(PrefixSum, cmdList,
@@ -1655,7 +1655,7 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Parse Compressed Blocks]");
         BIND_RS_PS_SRT(ParseCompressedBlocks);
-        cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 1);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
         cmdList->SetComputeRoot32BitConstant(1, req->resInfo.CompressedData_ByteSize, 2);
         cmdList->SetComputeRoot32BitConstant(1, req->zstdFrameCount, 3);
 
@@ -1746,7 +1746,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootUnorderedAccessView(2, req->resData.gpuOnly.LitStreamEndPerHuffmanTable->GetGPUVirtualAddress() + req->zstdCmpBlockCount * sizeof(uint32_t));
         cmdList->SetComputeRootUnorderedAccessView(3, req->resData.gpuOnly.LitGroupEndPerHuffmanTable->GetGPUVirtualAddress() + req->zstdCmpBlockCount * sizeof(uint32_t));
         cmdList->SetComputeRootUnorderedAccessView(4, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
-        cmdList->SetComputeRoot32BitConstant(5, req->zstdCmpBlockCount, 1);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
 #if 0
         // NOTE(pamartis): Use this pass to with DecompressLiterals kernel
         cmdList->SetComputeRoot32BitConstant(5, kzstdgpu_TgSizeX_DecompressLiterals, 2);
@@ -1852,6 +1852,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootShaderResourceView(1, req->resData.gpuOnly.LitStreamBuckets->GetGPUVirtualAddress());
         cmdList->SetComputeRootShaderResourceView(2, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(3, req->resData.gpuOnly.LitStreamRemap->GetGPUVirtualAddress());
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
 
         ZSTDGPU_KERNEL_SCOPE(GroupCompressedLiterals, cmdList,
             zstdgpu_DispatchIndirect(cmdList, GroupCompressedLiterals, GroupCompressedLiterals);
@@ -1871,35 +1872,37 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             // NOTE: we run 4 ExecuteIndirects (per argument) in order to be able to (but we don't do this for prototype)
             // switch PSO to more optimial (depending on maximal FSE table size) because D3D12 doesn't allow to switch PSOs in ExecuteIndirect.
 
+            // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
+
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Huffman Weights");
             uint32_t tableStartIndex = 0;
-            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 1);
-            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartHufW(0, req->zstdCmpBlockCount), 2);
-            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_HufW, 3);
+            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 2);
+            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartHufW(0, req->zstdCmpBlockCount), 3);
+            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_HufW, 4);
             zstdgpu_DispatchIndirect(cmdList, InitFseTable, FseHufW);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Literal Lengths");
             tableStartIndex += req->zstdCmpBlockCount;
-            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 1);
-            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartLLen(0, req->zstdCmpBlockCount), 2);
-            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_LLen, 3);
+            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 2);
+            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartLLen(0, req->zstdCmpBlockCount), 3);
+            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_LLen, 4);
             zstdgpu_DispatchIndirect(cmdList, InitFseTable, FseLLen);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Offsets");
             tableStartIndex += req->zstdCmpBlockCount + 1;
-            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 1);
-            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartOffs(0, req->zstdCmpBlockCount), 2);
-            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_Offs, 3);
+            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 2);
+            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartOffs(0, req->zstdCmpBlockCount), 3);
+            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_Offs, 4);
             zstdgpu_DispatchIndirect(cmdList, InitFseTable, FseOffs);
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"FSEs for Match Lengths");
             tableStartIndex += req->zstdCmpBlockCount + 1;
-            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 1);
-            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartMLen(0, req->zstdCmpBlockCount), 2);
-            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_MLen, 3);
+            cmdList->SetComputeRoot32BitConstant(1, tableStartIndex, 2);
+            cmdList->SetComputeRoot32BitConstant(1, zstdgpu_ComputeFseDataStartMLen(0, req->zstdCmpBlockCount), 3);
+            cmdList->SetComputeRoot32BitConstant(1, kzstdgpu_FseElemMaxCount_MLen, 4);
             zstdgpu_DispatchIndirect(cmdList, InitFseTable, FseMLen);
             PIXEndEvent(cmdList);
             PIXEndEvent(cmdList);
@@ -1926,6 +1929,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Decompress Huffman Weights]");
         BIND_RS_PS_SRT(DecompressHuffmanWeights);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
 
         ZSTDGPU_KERNEL_SCOPE(DecompressHuffmanWeights, cmdList,
             zstdgpu_DispatchIndirect(cmdList, DecompressHuffmanWeights, DecompressHuffmanWeights);
@@ -1937,8 +1941,9 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Decode Uncompressed Huffman Weights]");
         BIND_RS_PS_SRT(DecodeHuffmanWeights);
-        cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 1);
-        cmdList->SetComputeRoot32BitConstant(1, req->resInfo.CompressedData_ByteSize, 2);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
+        cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 2);
+        cmdList->SetComputeRoot32BitConstant(1, req->resInfo.CompressedData_ByteSize, 3);
 
         ZSTDGPU_KERNEL_SCOPE(DecodeHuffmanWeights, cmdList,
             zstdgpu_DispatchIndirect(cmdList, DecodeHuffmanWeights, DecodeHuffmanWeights);
@@ -1965,19 +1970,20 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Pre-Init Huffman Table]");
         BIND_RS_PS_SRT(InitHuffmanTable);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
 
         ZSTDGPU_KERNEL_SCOPE(InitHuffmanTable, cmdList,
         {
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Path: FSE-compressed Huffman Weights]");
             {
-                cmdList->SetComputeRoot32BitConstant(1, /** HuffmaTableIndexBase*/0, 1);
+                cmdList->SetComputeRoot32BitConstant(1, /** HuffmaTableIndexBase*/0, 2);
                 zstdgpu_DispatchIndirect(cmdList, InitHuffmanTable, FseHufW);
             }
             PIXEndEvent(cmdList);
 
             PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Path: Uncompressed Huffman Weights]");
             {
-                cmdList->SetComputeRoot32BitConstant(1, /** HuffmaTableIndexBase = zstdCmpBlockCount meaning indices are reversed */req->zstdCmpBlockCount, 1);
+                cmdList->SetComputeRoot32BitConstant(1, /** HuffmaTableIndexBase = zstdCmpBlockCount meaning indices are reversed */req->zstdCmpBlockCount, 2);
                 zstdgpu_DispatchIndirect(cmdList, InitHuffmanTable, HUF_WgtStreams);
             }
             PIXEndEvent(cmdList);
@@ -2003,7 +2009,8 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Decompress Literals]");
         BIND_RS_PS_SRT(DecompressLiterals);
-        cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 1);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
+        cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 2);
 
         ZSTDGPU_KERNEL_SCOPE(DecompressLiterals, cmdList,
             zstdgpu_DispatchIndirect(cmdList, DecompressLiterals, DecompressLiterals);
@@ -2026,6 +2033,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Decompress Sequences]");
         BIND_RS_PS_SRT(DecompressSequences);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
 
         ZSTDGPU_KERNEL_SCOPE(DecompressSequences, cmdList,
             zstdgpu_DispatchIndirect(cmdList, DecompressSequences, DecompressSequences);
@@ -2073,7 +2081,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
 
         cmdList->SetComputeRootUnorderedAccessView(0, req->resData.gpuOnly.BlockSizePrefix->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.BlockSizePrefix->GetGPUVirtualAddress() + allBlockCount * sizeof(uint32_t));
-        cmdList->SetComputeRoot32BitConstant(2, allBlockCount, 1);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
         cmdList->SetComputeRoot32BitConstant(2, 1 /** outputInclusive */, 2);
 
         ZSTDGPU_KERNEL_SCOPE(PrefixBlockSizes, cmdList,
@@ -2097,7 +2105,8 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootShaderResourceView(7, req->resData.gpuOnly.PerFrameBlockCountAll->GetGPUVirtualAddress());
         cmdList->SetComputeRootShaderResourceView(8, req->resData.gpuOnly.SeqRefs->GetGPUVirtualAddress());
         cmdList->SetComputeRootShaderResourceView(9, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
-        cmdList->SetComputeRoot32BitConstant(10, req->zstdFrameCount, 1);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
+        cmdList->SetComputeRoot32BitConstant(10, req->zstdFrameCount, 2);
 
         ZSTDGPU_KERNEL_SCOPE(PrefixSequenceOffsets, cmdList,
             zstdgpu_DispatchIndirect(cmdList, PrefixSequenceOffsets, PrefixSequenceOffsets);
@@ -2130,6 +2139,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Finalise Sequence Offsets]");
         BIND_RS_PS_SRT(FinaliseSequenceOffsets);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
 
         ZSTDGPU_KERNEL_SCOPE(FinaliseSequenceOffsets, cmdList,
             zstdgpu_DispatchIndirect(cmdList, FinaliseSequenceOffsets, FinaliseSequenceOffsets);
@@ -2161,7 +2171,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
                 cmdList->SetComputeRootShaderResourceView(2, req->resData.gpuOnly.PerFrameBlockSizesRAW->GetGPUVirtualAddress());
                 cmdList->SetComputeRootShaderResourceView(3, req->resData.gpuOnly.BlocksRAWRefs->GetGPUVirtualAddress());
                 cmdList->SetComputeRootShaderResourceView(4, req->resData.gpuOnly.GlobalBlockIndexPerRawBlock->GetGPUVirtualAddress());
-                cmdList->SetComputeRoot32BitConstant(5, req->zstdRawByteCount, 1);
+                // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
                 cmdList->SetComputeRoot32BitConstant(5, req->zstdRawBlockCount, 2);
                 cmdList->SetComputeRoot32BitConstant(5, req->zstdFrameCount, 3);
                 cmdList->SetComputeRoot32BitConstant(5, 1 /* flags */, 4);
@@ -2173,7 +2183,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
                 cmdList->SetComputeRootShaderResourceView(2, req->resData.gpuOnly.PerFrameBlockSizesRLE->GetGPUVirtualAddress());
                 cmdList->SetComputeRootShaderResourceView(3, req->resData.gpuOnly.BlocksRLERefs->GetGPUVirtualAddress());
                 cmdList->SetComputeRootShaderResourceView(4, req->resData.gpuOnly.GlobalBlockIndexPerRleBlock->GetGPUVirtualAddress());
-                cmdList->SetComputeRoot32BitConstant(5, req->zstdRleByteCount, 1);
+                // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
                 cmdList->SetComputeRoot32BitConstant(5, req->zstdRleBlockCount, 2);
                 cmdList->SetComputeRoot32BitConstant(5, req->zstdFrameCount, 3);
                 cmdList->SetComputeRoot32BitConstant(5, 0 /* flags */, 4);

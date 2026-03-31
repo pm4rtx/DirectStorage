@@ -19,7 +19,7 @@
 struct Consts
 {
     uint32_t tgOffset;
-    uint32_t byteCount;
+    uint32_t workItemCount;
     uint32_t blockCount;
     uint32_t frameCount;
     uint32_t flags;
@@ -45,7 +45,7 @@ void main(uint2 groupId : SV_GroupId, uint i : SV_GroupThreadId)
 {
     i += zstdgpu_ConvertTo32BitGroupId(groupId, Constants.tgOffset) * kzstdgpu_TgSizeX_MemsetMemcpy;
 
-    if (i >= Constants.byteCount)
+    if (i >= Constants.workItemCount)
         return;
 
     const uint32_t blockIdx = zstdgpu_BinarySearch(ZstdInBlockSizePrefixTyped, 0, Constants.blockCount, i);

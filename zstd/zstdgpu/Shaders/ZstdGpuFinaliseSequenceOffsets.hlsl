@@ -23,6 +23,7 @@
 struct Consts
 {
     uint32_t tgOffset;
+    uint32_t workItemCount;
 };
 
 ConstantBuffer<Consts> Constants : register(b0);
@@ -31,7 +32,7 @@ ConstantBuffer<Consts> Constants : register(b0);
 ZSTDGPU_FINALISE_SEQUENCE_OFFSETS_SRT()
 #include "../zstdgpu_srt_decl_undef.h"
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors=8), UAV(u0, numDescriptors=1)), RootConstants(b0, num32BitConstants=1)")]
+[RootSignature("DescriptorTable(SRV(t0, numDescriptors=8), UAV(u0, numDescriptors=1)), RootConstants(b0, num32BitConstants=2)")]
 [numthreads(kzstdgpu_TgSizeX_FinaliseSequenceOffsets, 1, 1)]
 void main(uint2 groupId : SV_GroupId, uint i : SV_GroupThreadId)
 {
