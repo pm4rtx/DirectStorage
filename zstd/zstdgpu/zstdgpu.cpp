@@ -404,7 +404,8 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_DISPATCH32_CMD_SIG(FinaliseSequenceOffsets  , 1)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(GroupCompressedLiterals  , 4)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitFseTable             , 1)    \
-    ZSTDGPU_DISPATCH32_CMD_SIG(InitHuffmanTable         , 1)
+    ZSTDGPU_DISPATCH32_CMD_SIG(InitHuffmanTable         , 1)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(PrefixSequenceOffsets    , 10)
 
 #define ZSTDGPU_RUNTIME_KERNEL_LIST_SHARED()        \
     ZSTDGPU_KERNEL(ComputeDestSequenceOffsets)      \
@@ -2014,11 +2015,11 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootShaderResourceView(6, req->resData.gpuOnly.PerFrameSeqStreamMinIdx->GetGPUVirtualAddress());
         cmdList->SetComputeRootShaderResourceView(7, req->resData.gpuOnly.PerFrameBlockCountAll->GetGPUVirtualAddress());
         cmdList->SetComputeRootShaderResourceView(8, req->resData.gpuOnly.SeqRefs->GetGPUVirtualAddress());
-        cmdList->SetComputeRoot32BitConstant(9, req->zstdSeqStreamCount, 0);
-        cmdList->SetComputeRoot32BitConstant(9, req->zstdFrameCount, 1);
+        cmdList->SetComputeRootShaderResourceView(9, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
+        cmdList->SetComputeRoot32BitConstant(10, req->zstdFrameCount, 1);
 
         ZSTDGPU_KERNEL_SCOPE(PrefixSequenceOffsets, cmdList,
-            cmdList->Dispatch(ZSTDGPU_TG_COUNT(req->zstdSeqStreamCount, kzstdgpu_TgSizeX_PrefixSequenceOffsets), 1, 1);
+            zstdgpu_DispatchIndirect(cmdList, PrefixSequenceOffsets, PrefixSequenceOffsets);
         );
 
         PIXEndEvent(cmdList);
