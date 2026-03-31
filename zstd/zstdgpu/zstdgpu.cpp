@@ -408,7 +408,8 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_DISPATCH32_CMD_SIG(MemsetMemcpy             , 5)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(PrefixSequenceOffsets    , 10)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(PrefixSum                , 2)    \
-    ZSTDGPU_DISPATCH32_CMD_SIG(ComputePrefixSum         , 5)
+    ZSTDGPU_DISPATCH32_CMD_SIG(ComputePrefixSum         , 5)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(ParseCompressedBlocks    , 1)
 
 #define ZSTDGPU_RUNTIME_KERNEL_LIST_SHARED()        \
     ZSTDGPU_KERNEL(ComputeDestSequenceOffsets)      \
@@ -1438,7 +1439,7 @@ void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         // Resources needed by for Parse Frames
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier for [PrefixSum :: Block Counts]");
-        D3D12_RESOURCE_BARRIER barriers[6];
+        D3D12_RESOURCE_BARRIER barriers[7];
         // next written/atomically updated by [Parse Frames :: Count Blocks]
         // next written by [PrefixSum :: Block Counts] to store prefix sum instead of counts
         setResourceUavSync(barriers, 0, req->resData.gpuOnly.PerFrameBlockCountRAW);
@@ -1447,6 +1448,10 @@ void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         setResourceUavSync(barriers, 3, req->resData.gpuOnly.PerFrameBlockCountAll);
         setResourceUavSync(barriers, 4, req->resData.gpuOnly.PerFrameBlockSizesRAW);
         setResourceUavSync(barriers, 5, req->resData.gpuOnly.PerFrameBlockSizesRLE);
+        // last written by [Parse Frames :: Count Blocks]
+        // next read by [Update Dispatch Args :: Stage 0] as RWStructuredBuffer (read-only)
+        // NOTE: stays in UNORDERED_ACCESS because UpdateDispatchArgs binds Counters as UAV
+        setResourceUavSync(barriers, 6, req->resData.gpuOnly.Counters);
         cmdList->ResourceBarrier(_countof(barriers), barriers);
         PIXEndEvent(cmdList);
     }
@@ -1494,9 +1499,22 @@ void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXEndEvent(cmdList);
     }
     {
-        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier for [Readback Counters :: After Block Count] and [Parse Compressed Blocks] and [Prefix Sequence Offsets] and [Finalise Sequence Offsets]");
-        D3D12_RESOURCE_BARRIER barriers[3];
-        // last written by [Parse Frames :: Count Blocks]
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Update Dispatch Args :: Stage 0]");
+        d3d12aid_ComputeRsPs_Set(&req->UpdateDispatchArgs, cmdList);
+        cmdList->SetComputeRootUnorderedAccessView(0, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
+        cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.DispatchArgs->GetGPUVirtualAddress());
+        cmdList->SetComputeRootUnorderedAccessView(2, req->resData.gpuOnly.DispatchCnts->GetGPUVirtualAddress());
+        cmdList->SetComputeRoot32BitConstant(3, req->DecompressSequences_StreamsPerGroup, 0);
+        cmdList->SetComputeRoot32BitConstant(3, 0 /* stage */, 1);
+        ZSTDGPU_KERNEL_SCOPE(UpdateDispatchArgs_Stage0, cmdList,
+            cmdList->Dispatch(1, 1, 1);
+        );
+        PIXEndEvent(cmdList);
+    }
+    {
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier for [Readback Counters :: After Block Count] and [Parse Compressed Blocks]");
+        D3D12_RESOURCE_BARRIER barriers[5];
+        // last read by [Update Dispatch Args :: Stage 0]
         // next read by [Readback Counters :: After Block Count]
         setResourceState(barriers, 0, req->resData.gpuOnly.Counters, UNORDERED_ACCESS, COPY_SOURCE);
         // last written by [PrefixSum :: Block Counts]
@@ -1505,6 +1523,10 @@ void zstdgpu_SubmitStage0(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         // last written by [PrefixSum :: Block Counts]
         // next read by [Prefix Sequence Offsets] and [Finalise Sequence Offsets]
         setResourceUavToSrvSync(barriers, 2, req->resData.gpuOnly.PerFrameBlockCountAll);
+        // last written by [Update Dispatch Args :: Stage 0]
+        // next read by ExecuteIndirect calls as argument/count buffers
+        setResourceState(barriers, 3, req->resData.gpuOnly.DispatchArgs, UNORDERED_ACCESS, INDIRECT_ARGUMENT);
+        setResourceState(barriers, 4, req->resData.gpuOnly.DispatchCnts, UNORDERED_ACCESS, INDIRECT_ARGUMENT);
         cmdList->ResourceBarrier(_countof(barriers), barriers);
         PIXEndEvent(cmdList);
     }
@@ -1633,12 +1655,12 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Parse Compressed Blocks]");
         BIND_RS_PS_SRT(ParseCompressedBlocks);
-        cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 0);
-        cmdList->SetComputeRoot32BitConstant(1, req->resInfo.CompressedData_ByteSize, 1);
-        cmdList->SetComputeRoot32BitConstant(1, req->zstdFrameCount, 2);
+        cmdList->SetComputeRoot32BitConstant(1, req->zstdCmpBlockCount, 1);
+        cmdList->SetComputeRoot32BitConstant(1, req->resInfo.CompressedData_ByteSize, 2);
+        cmdList->SetComputeRoot32BitConstant(1, req->zstdFrameCount, 3);
 
         ZSTDGPU_KERNEL_SCOPE(ParseCompressedBlocks, cmdList,
-            cmdList->Dispatch(ZSTDGPU_TG_COUNT(req->zstdCmpBlockCount, kzstdgpu_TgSizeX_ParseCompressedBlocks), 1, 1);
+            zstdgpu_DispatchIndirect(cmdList, ParseCompressedBlocks, ParseCompressedBlocks);
         );
         PIXEndEvent(cmdList);
     }
@@ -1646,7 +1668,7 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     if (req->zstdCmpBlockCount > 0)
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier for [Readback Counters :: After Block Parse] and [Update Dispatch Args] and [Compute `Per-Huffman Table` Literal Stream Count Prefix]");
-        D3D12_RESOURCE_BARRIER barriers[9];
+        D3D12_RESOURCE_BARRIER barriers[11];
         // last written by [Parse Compressed Blocks]
         // next read by [Readback Counters :: After Block Parse] and updated by [Update Dispatch Args]
         setResourceState(barriers, 0, req->resData.gpuOnly.Counters, UNORDERED_ACCESS, COPY_SOURCE);
@@ -1669,6 +1691,10 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         // last written by [Parse Compressed Blocks]
         // next read by [Finalise Sequence Offsets]
         setResourceUavToSrvSync(barriers, 8, req->resData.gpuOnly.PerSeqStreamSeqStart);
+        // last read by ExecuteIndirect as INDIRECT_ARGUMENT
+        // next written by [Update Dispatch Args :: Stage 2]
+        setResourceState(barriers, 9, req->resData.gpuOnly.DispatchArgs, INDIRECT_ARGUMENT, UNORDERED_ACCESS);
+        setResourceState(barriers, 10, req->resData.gpuOnly.DispatchCnts, INDIRECT_ARGUMENT, UNORDERED_ACCESS);
         cmdList->ResourceBarrier(_countof(barriers), barriers);
         PIXEndEvent(cmdList);
     }
@@ -1688,7 +1714,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.DispatchArgs->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(2, req->resData.gpuOnly.DispatchCnts->GetGPUVirtualAddress());
         cmdList->SetComputeRoot32BitConstant(3, req->DecompressSequences_StreamsPerGroup, 0);
-        cmdList->SetComputeRoot32BitConstant(3, 0 /* stage */, 1);
+        cmdList->SetComputeRoot32BitConstant(3, 1 /* stage */, 1);
         ZSTDGPU_KERNEL_SCOPE(UpdateDispatchArgs, cmdList,
             cmdList->Dispatch(1, 1, 1);
         );
@@ -1759,7 +1785,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.DispatchArgs->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(2, req->resData.gpuOnly.DispatchCnts->GetGPUVirtualAddress());
         cmdList->SetComputeRoot32BitConstant(3, req->DecompressSequences_StreamsPerGroup, 0);
-        cmdList->SetComputeRoot32BitConstant(3, 1 /* stage */, 1);
+        cmdList->SetComputeRoot32BitConstant(3, 2 /* stage */, 1);
         ZSTDGPU_KERNEL_SCOPE(UpdateDispatchArgs_DecompressLiterals, cmdList,
             cmdList->Dispatch(1, 1, 1);
         );

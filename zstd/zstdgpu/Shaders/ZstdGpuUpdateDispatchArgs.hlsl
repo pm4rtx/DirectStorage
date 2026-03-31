@@ -45,7 +45,10 @@ void main()
         zstdgpu_EmitDispatch(ZstdDispatchArgs, ZstdDispatchCnts, kzstdgpu_DispatchSlot_PrefixBlockSizes,         allBlockCount,                            kzstdgpu_TgSizeX_PrefixSum);
         zstdgpu_EmitDispatch(ZstdDispatchArgs, ZstdDispatchCnts, kzstdgpu_DispatchSlot_MemcpyRAW,                ZstdCounters[0].BlocksBytes_RAW,          kzstdgpu_TgSizeX_MemsetMemcpy);
         zstdgpu_EmitDispatch(ZstdDispatchArgs, ZstdDispatchCnts, kzstdgpu_DispatchSlot_MemsetRLE,                ZstdCounters[0].BlocksBytes_RLE,          kzstdgpu_TgSizeX_MemsetMemcpy);
-
+        zstdgpu_EmitDispatch(ZstdDispatchArgs, ZstdDispatchCnts, kzstdgpu_DispatchSlot_ParseCompressedBlocks,    cmpBlockCount,                            kzstdgpu_TgSizeX_ParseCompressedBlocks);
+    }
+    else if (Consts.stage == 1)
+    {
         // the arguments dependent on various streams counts that are part of compressed blocks -- these could be computed after ParseCompressedBlocks
         zstdgpu_EmitDispatch(ZstdDispatchArgs, ZstdDispatchCnts, kzstdgpu_DispatchSlot_FseHufW,                  ZstdCounters[0].FseHufW,                  1);
         zstdgpu_EmitDispatch(ZstdDispatchArgs, ZstdDispatchCnts, kzstdgpu_DispatchSlot_FseLLen,                  ZstdCounters[0].FseLLen,                  1);
