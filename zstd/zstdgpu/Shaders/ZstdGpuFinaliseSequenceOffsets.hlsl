@@ -41,11 +41,7 @@ void main(uint2 groupId : SV_GroupId, uint i : SV_GroupThreadId)
     ZSTDGPU_FINALISE_SEQUENCE_OFFSETS_SRT()
     #include "../zstdgpu_srt_decl_undef.h"
 
-#if defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
-    i += groupId.x * kzstdgpu_TgSizeX_FinaliseSequenceOffsets;
-#else
-    i += (Constants.tgOffset + groupId.y * 65535 + groupId.x) * kzstdgpu_TgSizeX_FinaliseSequenceOffsets;
-#endif
+    i += zstdgpu_ConvertTo32BitGroupId(groupId, Constants.tgOffset) * kzstdgpu_TgSizeX_FinaliseSequenceOffsets;
 
     zstdgpu_ShaderEntry_FinaliseSequenceOffsets(srt, i);
 }

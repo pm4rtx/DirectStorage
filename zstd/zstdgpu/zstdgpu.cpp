@@ -401,6 +401,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_DISPATCH32_CMD_SIG(DecompressHuffmanWeights , 1)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(DecompressLiterals       , 1)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(DecompressSequences      , 1)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(FinaliseSequenceOffsets  , 1)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(GroupCompressedLiterals  , 4)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitFseTable             , 1)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitHuffmanTable         , 1)
@@ -2048,9 +2049,8 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Finalise Sequence Offsets]");
         BIND_RS_PS_SRT(FinaliseSequenceOffsets);
 
-        const uint32_t tgCount = ZSTDGPU_TG_COUNT(req->zstdUncompressedSequenceCount, kzstdgpu_TgSizeX_FinaliseSequenceOffsets);
         ZSTDGPU_KERNEL_SCOPE(FinaliseSequenceOffsets, cmdList,
-            zstdgpu_Dispatch32Bit(cmdList, tgCount, 1, 0);
+            zstdgpu_DispatchIndirect(cmdList, FinaliseSequenceOffsets, FinaliseSequenceOffsets);
         );
 
         PIXEndEvent(cmdList);
