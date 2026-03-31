@@ -54,12 +54,7 @@ groupshared uint32_t Lds[kzstdgpu_DecompressSequences_MultiStream_LdsOutCache_Ld
 [numthreads(NUM_THREADS, 1, 1)]
 void main(uint32_t2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {
-#if defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
-    const uint32_t groupId = groupId2.x;
-#else
-    const uint32_t groupId = Constants.tgOffset + groupId2.y * 65535 + groupId2.x;
-#endif
-
+    const uint32_t groupId = zstdgpu_ConvertTo32BitGroupId(groupId2, Constants.tgOffset);
     zstdgpu_DecompressSequences_SRT srt;
 
     #include "../zstdgpu_srt_decl_copy.h"

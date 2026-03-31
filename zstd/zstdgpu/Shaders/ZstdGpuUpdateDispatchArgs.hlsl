@@ -18,15 +18,18 @@
 
 #include "../zstdgpu_shaders.h"
 
-#ifndef kzstdgpu_DecompressSequences_StreamsPerTG
-#define kzstdgpu_DecompressSequences_StreamsPerTG 8
-#endif
-
 RWStructuredBuffer<zstdgpu_Counters>  ZstdCounters     : register(u0);
 RWStructuredBuffer<uint32_t>          ZstdDispatchArgs : register(u1);
 RWStructuredBuffer<uint32_t>          ZstdDispatchCnts : register(u2);
 
-[RootSignature("UAV(u0), UAV(u1), UAV(u2)")]
+struct UpdateDispatchArgsConsts
+{
+    uint32_t decompressSequences_StreamsPerTG;
+};
+
+ConstantBuffer<UpdateDispatchArgsConsts> Consts : register(b0);
+
+[RootSignature("UAV(u0), UAV(u1), UAV(u2), RootConstants(b0, num32BitConstants=1)")]
 [numthreads(1, 1, 1)]
 void main()
 {
@@ -44,10 +47,10 @@ void main()
     // (a byte per weight) becomes identical, so identical representation simplfies initialisation of Huffman tables to use during literal decoding
     zstdgpu_EmitDispatch(ZstdDispatchArgs, ZstdDispatchCnts, kzstdgpu_DispatchSlot_DecodeHuffmanWeights,     ZstdCounters[0].HUF_WgtStreams, kzstdgpu_TgSizeX_DecodeHuffmanWeights);
     zstdgpu_EmitDispatch(ZstdDispatchArgs, ZstdDispatchCnts, kzstdgpu_DispatchSlot_GroupCompressedLiterals,  ZstdCounters[0].HUF_Streams,    32);
-    zstdgpu_EmitDispatch(ZstdDispatchArgs, ZstdDispatchCnts, kzstdgpu_DispatchSlot_DecompressSequences,      ZstdCounters[0].Seq_Streams,    kzstdgpu_DecompressSequences_StreamsPerTG);
+    zstdgpu_EmitDispatch(ZstdDispatchArgs, ZstdDispatchCnts, kzstdgpu_DispatchSlot_DecompressSequences,      ZstdCounters[0].Seq_Streams,    Consts.decompressSequences_StreamsPerTG);
 
     // NOTE: DecompressLiterals slot is written by ComputePrefixSum (runs after this shader)
 
     // Update derived counter field in Counters (kept for shader bounds checks)
-    ZstdCounters[0].DecompressSequencesGroups = ZSTDGPU_TG_COUNT(ZstdCounters[0].Seq_Streams, kzstdgpu_DecompressSequences_StreamsPerTG);
+    ZstdCounters[0].DecompressSequencesGroups = ZSTDGPU_TG_COUNT(ZstdCounters[0].Seq_Streams, Consts.decompressSequences_StreamsPerTG);
 }

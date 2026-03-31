@@ -400,6 +400,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_DISPATCH32_CMD_SIG(DecodeHuffmanWeights     , 1)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(DecompressHuffmanWeights , 1)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(DecompressLiterals       , 1)    \
+    ZSTDGPU_DISPATCH32_CMD_SIG(DecompressSequences      , 1)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(GroupCompressedLiterals  , 4)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitFseTable             , 1)    \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitHuffmanTable         , 1)
@@ -1675,6 +1676,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         cmdList->SetComputeRootUnorderedAccessView(0, req->resData.gpuOnly.Counters->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(1, req->resData.gpuOnly.DispatchArgs->GetGPUVirtualAddress());
         cmdList->SetComputeRootUnorderedAccessView(2, req->resData.gpuOnly.DispatchCnts->GetGPUVirtualAddress());
+        cmdList->SetComputeRoot32BitConstant(3, req->DecompressSequences_StreamsPerGroup, 0);
         ZSTDGPU_KERNEL_SCOPE(UpdateDispatchArgs, cmdList,
             cmdList->Dispatch(1, 1, 1);
         );
@@ -1942,9 +1944,8 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Decompress Sequences]");
         BIND_RS_PS_SRT(DecompressSequences);
 
-        const uint32_t tgCount = ZSTDGPU_TG_COUNT(req->zstdSeqStreamCount, req->DecompressSequences_StreamsPerGroup);
         ZSTDGPU_KERNEL_SCOPE(DecompressSequences, cmdList,
-            zstdgpu_Dispatch32Bit(cmdList, tgCount, 1, 0);
+            zstdgpu_DispatchIndirect(cmdList, DecompressSequences, DecompressSequences);
         );
         PIXEndEvent(cmdList);
     }
