@@ -340,7 +340,11 @@ static const uint32_t kzstdgpu_DispatchSlot_PrefixBlockSizes             = 13;
 static const uint32_t kzstdgpu_DispatchSlot_MemcpyRAW                    = 14;
 static const uint32_t kzstdgpu_DispatchSlot_MemsetRLE                    = 15;
 static const uint32_t kzstdgpu_DispatchSlot_ParseCompressedBlocks        = 16;
-static const uint32_t kzstdgpu_DispatchSlot_Count                        = 17;
+static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockLookback      = 17;
+static const uint32_t kzstdgpu_DispatchSlot_Memset_TableIndexLookback    = 18;
+static const uint32_t kzstdgpu_DispatchSlot_Memset_LitStreamEnd          = 19;
+static const uint32_t kzstdgpu_DispatchSlot_Memset_AllBlockLookback      = 20;
+static const uint32_t kzstdgpu_DispatchSlot_Count                        = 21;
 
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
 static const uint32_t kzstdgpu_DispatchSlot_CmdsPerSlot                  = 1;
@@ -377,6 +381,7 @@ static const uint32_t kzstdgpu_TgSizeX_PrefixSum = 32;
 #endif
 
 static const uint32_t kzstdgpu_TgSizeX_ParseCompressedBlocks = 32;
+static const uint32_t kzstdgpu_TgSizeX_Memset = 64;
 
 // NOTE(pamartis): The rationale behind the below choice of TG sizes is the following
 //      On Xbox, we aim widest available wave size to help with cross-lane operations
@@ -1517,25 +1522,12 @@ static inline uint32_t zstdgpu_GetHufFseTableIndexLookbackUInt32Count(uint32_t c
     return zstdgpu_GetLookbackBlockCount(compressedBlockCount) * (sizeof(zstdgpu_TableIndexLookback) / sizeof(uint32_t));
 }
 
-static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockCount, uint32_t compressedBlockCount, uint32_t frameCount, uint32_t initResourceStage)
+static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t initResourceStage)
 {
-    const uint32_t lookbackUIntCount = zstdgpu_GetHufFseTableIndexLookbackUInt32Count(compressedBlockCount);
-
     uint32_t maxThreads = 1; // Counter init is single-threaded (struct assignment)
-
-    if (initResourceStage == 0)
-    {
-        // should be sufficient to initialize PerFrameBlockCount{RAW, RLE, CMP}
-        if (maxThreads < frameCount)
-            maxThreads = frameCount;
-    }
 
     if (initResourceStage == 1)
     {
-        // should be sufficient for Lookback
-        if (maxThreads < lookbackUIntCount)
-            maxThreads = lookbackUIntCount;
-
         // should be sufficient for default LLen Prob table
         if (maxThreads < kzstdgpu_FseDefaultProbCount_LLen)
             maxThreads = kzstdgpu_FseDefaultProbCount_LLen;
@@ -1551,17 +1543,6 @@ static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockC
         // should be sufficient for RLE FSE table entries
         if (maxThreads < kzstdgpu_FseRleTableCount)
             maxThreads = kzstdgpu_FseRleTableCount;
-
-        // should be sufficient to initialize PerFrameSeqStreamMinIdx
-        if (maxThreads < frameCount)
-            maxThreads = frameCount;
-
-        // should be sufficient for Histogram of Literals per Huffman Table and its Lookback (appended at the end)
-        if (maxThreads < compressedBlockCount + zstdgpu_GetLookbackBlockCount(compressedBlockCount))
-            maxThreads = compressedBlockCount + zstdgpu_GetLookbackBlockCount(compressedBlockCount);
-
-        if (maxThreads < zstdgpu_GetLookbackBlockCount(allBlockCount))
-            maxThreads = allBlockCount;
     }
     return (maxThreads + kzstdgpu_TgSizeX_InitCounters - 1) / kzstdgpu_TgSizeX_InitCounters;
 }
@@ -1596,24 +1577,8 @@ static inline uint32_t zstdgpu_InitResources_GetDispatchSizeX(uint32_t allBlockC
     \
     ZSTDGPU_RW_BUFFER_DECL(zstdgpu_FseInfo                      , FseInfos                      , 1)    \
     ZSTDGPU_RW_BUFFER_DECL(zstdgpu_Counters                     , Counters                      , 2)    \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , TableIndexLookback            , 3)    \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , LitStreamEndPerHuffmanTable   , 4)    \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , LitGroupEndPerHuffmanTable    , 5)    \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , BlockSizePrefix               , 6)    \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerSeqStreamFinalOffset1      , 7)    \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerSeqStreamFinalOffset2      , 8)    \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerSeqStreamFinalOffset3      , 9)    \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerFrameBlockCountRAW         , 10)   \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerFrameBlockCountRLE         , 11)   \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerFrameBlockCountCMP         , 12)   \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerFrameBlockCountAll         , 13)   \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerFrameBlockSizesRAW         , 14)    \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerFrameBlockSizesRLE         , 15)    \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , PerFrameSeqStreamMinIdx       , 16)   \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , SeqCountPrefixLookback        , 17)   \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , BlockSeqCountPrefixLookback   , 18)   \
     \
-    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , FseElems                      , 19)
+    ZSTDGPU_RW_BUFFER_DECL(uint32_t                             , FseElems                      , 3)
 
 #define ZSTDGPU_PARSE_COMPRESSED_BLOCKS_SRT()                                                           \
     ZSTDGPU_RO_BUFFER_DECL(uint32_t                             , CompressedData                , 0)    \

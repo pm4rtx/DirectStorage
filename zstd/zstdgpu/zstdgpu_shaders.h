@@ -620,25 +620,7 @@ static void zstdgpu_ShaderEntry_InitResources(ZSTDGPU_PARAM_INOUT(zstdgpu_InitRe
             srt.inoutCounters[0].Frames_UncompressedByteSize                 = 0;
             srt.inoutCounters[0].Frames_ExecuteSequences                     = 0;
         }
-
-        // NOTE(pamartis): here we initialize "lookback" regions in buffers containing prefix region + lookback region
-        ZSTDGPU_FOR_WORK_ITEMS(i, zstdgpu_GetLookbackBlockCount(srt.frameCount), threadId, kzstdgpu_TgSizeX_InitCounters)
-        {
-            srt.inoutPerFrameBlockCountRAW[srt.frameCount + i] = 0;
-            srt.inoutPerFrameBlockCountRLE[srt.frameCount + i] = 0;
-            srt.inoutPerFrameBlockCountCMP[srt.frameCount + i] = 0;
-            srt.inoutPerFrameBlockCountAll[srt.frameCount + i] = 0;
-            srt.inoutPerFrameBlockSizesRAW[srt.frameCount + i] = 0;
-            srt.inoutPerFrameBlockSizesRLE[srt.frameCount + i] = 0;
-        }
         return;
-    }
-
-    const uint32_t lookbackUInt32Count = zstdgpu_GetHufFseTableIndexLookbackUInt32Count(srt.cmpBlockCount);
-
-    ZSTDGPU_FOR_WORK_ITEMS(i, lookbackUInt32Count, threadId, kzstdgpu_TgSizeX_InitCounters)
-    {
-        srt.inoutTableIndexLookback[i] = 0;
     }
 
     ZSTDGPU_FOR_WORK_ITEMS(i, 1, threadId, kzstdgpu_TgSizeX_InitCounters)
@@ -658,16 +640,6 @@ static void zstdgpu_ShaderEntry_InitResources(ZSTDGPU_PARAM_INOUT(zstdgpu_InitRe
         zstdgpu_FseInfo rleInfo;
         rleInfo.fseProbCountAndAccuracyLog2 = 0;
         srt.inoutFseInfos[i] = rleInfo;
-    }
-
-    // NOTE(pamartis): We initialize the buffer which is going to store (per frame) an index of the first compressed block
-    // with non-zero sequence count, to initialize default offsets to 1, 4, 8
-    //
-    // The actual index of the compressed block is going to be determined during compressed block parsing where each
-    // compressed block (thread) will store its index via atomic "min".
-    ZSTDGPU_FOR_WORK_ITEMS(i, srt.frameCount, threadId, kzstdgpu_TgSizeX_InitCounters)
-    {
-        srt.inoutPerFrameSeqStreamMinIdx[i] = ~0u;
     }
 
     // NOTE(pamartis): We start from `srt.cmpBlockCount * kzstdgpu_MaxCount_FseProbs` because
@@ -698,55 +670,6 @@ static void zstdgpu_ShaderEntry_InitResources(ZSTDGPU_PARAM_INOUT(zstdgpu_InitRe
     ZSTDGPU_FOR_WORK_ITEMS(i, kzstdgpu_FseDefaultProbCount_MLen, threadId, kzstdgpu_TgSizeX_InitCounters)
     {
         srt.inoutFseProbs[dstStart + i] = srt.inFseProbsDefault[srcStart + i];
-    }
-
-    ZSTDGPU_FOR_WORK_ITEMS(i, srt.cmpBlockCount + zstdgpu_GetLookbackBlockCount(srt.cmpBlockCount), threadId, kzstdgpu_TgSizeX_InitCounters)
-    {
-        srt.inoutLitStreamEndPerHuffmanTable[i] = 0;
-    }
-
-#if 0 // NOTE: disabled because "zeros" are written by all compressed blocks without sequences in Compressed Block Parsing.
-
-    ZSTDGPU_FOR_WORK_ITEMS(i, srt.cmpBlockCount, threadId, kzstdgpu_TgSizeX_InitCounters)
-    {
-        // NOTE(pamartis): The motivation why we initialize the entire buffer with per-block "final" offsets to zero is somewhat non-trivial:
-        //
-        //  - The buffer contains two sub-buffers:
-        //      1. the sub-buffer where the actual per block "final" offsets are stored
-        //      2. the sub-buffer with the lookback information to propagate "final" offset between blocks
-        //  - So, the lookback obviously need initialisation to zero because
-        //      1. it doesn't store any data in lower 30 bits
-        //      2. its upper 2-bit "flags" field of 32-bit integer have to store "0" meaning -- it's cleared
-        //
-        //  - The actual "repeat" offsets are initialized to "0" because it's invalid "offset value" which can't be written
-        //    by sequence decompression pass which also outputs re-encoded "offset values", so writing "0" in this initialization pass,
-        //    allows us to write default "repeat" offsets (1, 4, 8) for every first compressed block with non-zero sequence count in every frame,
-        //    and also allows us to populate per-block final re-encoded "repeat" offsets from sequence decompression pass.
-        //    So as a result, all zero offsets give us information during "repeat" offset propagation that they can't be used as "propagation source"
-        //    and only can be used as "propagation destination" because corresponding blocks don't contain any sequences.
-        srt.inoutPerSeqStreamFinalOffset1[i] = 3 + 1;
-        srt.inoutPerSeqStreamFinalOffset2[i] = 3 + 4;
-        srt.inoutPerSeqStreamFinalOffset3[i] = 3 + 8;
-    }
-#endif
-
-    // NOTE(pamartis): initialize all "lookback" sub-buffers that depend on `srt.cmpBlockCount`
-    ZSTDGPU_FOR_WORK_ITEMS(i, zstdgpu_GetLookbackBlockCount(srt.cmpBlockCount), threadId, kzstdgpu_TgSizeX_InitCounters)
-    {
-        #ifdef __hlsl_dx_compiler
-        srt.inoutLitGroupEndPerHuffmanTable[srt.cmpBlockCount + i] = 0;
-        #endif
-        srt.inoutPerSeqStreamFinalOffset1[srt.cmpBlockCount + i] = 0;
-        srt.inoutPerSeqStreamFinalOffset2[srt.cmpBlockCount + i] = 0;
-        srt.inoutPerSeqStreamFinalOffset3[srt.cmpBlockCount + i] = 0;
-        srt.inoutSeqCountPrefixLookback[i] = 0;
-        srt.inoutBlockSeqCountPrefixLookback[i] = 0;
-    }
-
-    // NOTE(pamartis): initialize "lookback" sub-buffer that depend on `srt.allBlockCount`
-    ZSTDGPU_FOR_WORK_ITEMS(i, zstdgpu_GetLookbackBlockCount(srt.allBlockCount), threadId, kzstdgpu_TgSizeX_InitCounters)
-    {
-        srt.inoutBlockSizePrefix[srt.allBlockCount + i] = 0;
     }
 }
 
