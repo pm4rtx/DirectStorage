@@ -3323,7 +3323,10 @@ static void zstdgpu_ShaderEntry_DecompressSequences_MultiStream(ZSTDGPU_PARAM_IN
 
     // NOTE: the final block size will be computed as SUM(literalSize, totalMLen)
     const uint32_t literalSize = srt.inoutBlockSizePrefix[seqRef.blockId];
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
     uint32_t totalSize = 0;
+    uint32_t totalLLen = 0;
+#endif
     uint32_t totalMLen = 0;
 
     uint32_t offset1, offset2, offset3;
@@ -3368,12 +3371,16 @@ static void zstdgpu_ShaderEntry_DecompressSequences_MultiStream(ZSTDGPU_PARAM_IN
             );
             offs = zstdgpu_UpdatePreviousAndRecomputeIncoming(offset1, offset2, offset3, offs, llen);
 
-            // TODO: output totalSize per iteration to automatically compute prefix
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+            srt.inoutDecompressedSequenceLLen[i] = totalLLen;
+            totalLLen += llen;
             totalSize += llen + mlen;
-            totalMLen += mlen;
-
+            srt.inoutDecompressedSequenceMLen[i] = totalSize;
+#else
             srt.inoutDecompressedSequenceLLen[i] = llen;
             srt.inoutDecompressedSequenceMLen[i] = mlen;
+#endif
+            totalMLen += mlen;
             srt.inoutDecompressedSequenceOffs[i] = offs;
 
             if (i == outputEnd - 1u)
@@ -3433,7 +3440,10 @@ static void zstdgpu_ShaderEntry_DecompressSequences_SingleStream(ZSTDGPU_PARAM_I
 
      // NOTE: the final block size will be computed as SUM(literalSize, totalMLen)
     const uint32_t literalSize = srt.inoutBlockSizePrefix[seqRef.blockId];
-    // uint32_t totalSize = 0;
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+    uint32_t totalSize = 0;
+    uint32_t totalLLen = 0;
+#endif
     uint32_t totalMLen = 0;
 
     uint32_t offset1, offset2, offset3;
@@ -3517,11 +3527,16 @@ static void zstdgpu_ShaderEntry_DecompressSequences_SingleStream(ZSTDGPU_PARAM_I
             llen, offs, mlen);
         offs = zstdgpu_UpdatePreviousAndRecomputeIncoming(offset1, offset2, offset3, offs, llen);
 
-        /*totalSize += llen + mlen;*/
-        totalMLen += mlen;
-
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+        srt.inoutDecompressedSequenceLLen[i] = totalLLen;
+        totalLLen += llen;
+        totalSize += llen + mlen;
+        srt.inoutDecompressedSequenceMLen[i] = totalSize;
+#else
         srt.inoutDecompressedSequenceLLen[i] = llen;
         srt.inoutDecompressedSequenceMLen[i] = mlen;
+#endif
+        totalMLen += mlen;
         srt.inoutDecompressedSequenceOffs[i] = offs;
 
         if (++i == outputEnd)
@@ -3630,6 +3645,10 @@ static void zstdgpu_ShaderEntry_DecompressSequences_MultiStream_LdsOutCache(ZSTD
 
     // NOTE: the final block size will be computed as SUM(literalSize, totalMLen)
     const uint32_t literalSize = srt.inoutBlockSizePrefix[seqRef.blockId];
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+    uint32_t totalSize = 0;
+    uint32_t totalLLen = 0;
+#endif
     uint32_t totalMLen = 0;
 
     const uint32_t startLLen = zstdgpu_ComputeFseDataStartFromFseIndexLLen(seqRef.fseLLen, cmpBlockCnt);
@@ -3681,14 +3700,23 @@ static void zstdgpu_ShaderEntry_DecompressSequences_MultiStream_LdsOutCache(ZSTD
                 );
                 offs = zstdgpu_UpdatePreviousAndRecomputeIncoming(offset1, offset2, offset3, offs, llen);
 
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+                const uint32_t storedLLen = totalLLen;
+                totalLLen += llen;
+                totalSize += llen + mlen;
+                const uint32_t storedMLen = totalSize;
+#else
+                const uint32_t storedLLen = llen;
+                const uint32_t storedMLen = mlen;
+#endif
                 totalMLen += mlen;
 
                 const uint32_t seqIdxInBatch = seqIdx - seqIdxBatchBeg;
 
                 //
                 const uint32_t seqIdxInCache = (seqIdxInBatch & ~kStoreCacheBankMask) + ((seqIdxInBatch + seqStreamIdxInGroup) & kStoreCacheBankMask);
-                zstdgpu_LdsStoreU32(GS_LLenCache + storeCacheThreadOffset + seqIdxInCache, llen);
-                zstdgpu_LdsStoreU32(GS_MLenCache + storeCacheThreadOffset + seqIdxInCache, mlen);
+                zstdgpu_LdsStoreU32(GS_LLenCache + storeCacheThreadOffset + seqIdxInCache, storedLLen);
+                zstdgpu_LdsStoreU32(GS_MLenCache + storeCacheThreadOffset + seqIdxInCache, storedMLen);
                 zstdgpu_LdsStoreU32(GS_OffsCache + storeCacheThreadOffset + seqIdxInCache, offs);
 
                 if (++seqIdx < seqIdxEnd)
@@ -3763,6 +3791,20 @@ static void zstdgpu_ShaderEntry_FinaliseSequenceOffsets(ZSTDGPU_PARAM_INOUT(zstd
 
     uint32_t offset = srt.inoutDecompressedSequenceOffs[seqIdx];
 
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+    const uint32_t seqStreamCnt = srt.inCounters[0].Seq_Streams;
+    const uint32_t seqStreamIdx = zstdgpu_BinarySearch(srt.inPerSeqStreamSeqStart, 0, seqStreamCnt, seqIdx);
+    const uint32_t blockIdx     = srt.inSeqStreamToBlockId[seqStreamIdx];
+    ZSTDGPU_BRANCH if (seqIdx > srt.inPerSeqStreamSeqStart[seqStreamIdx])
+    {
+        srt.inoutDestSequenceOffsets[seqIdx] = srt.inBlockDestOffs[blockIdx] + srt.inDecompressedSequenceMLen[seqIdx - 1u];
+    }
+    else
+    {
+        srt.inoutDestSequenceOffsets[seqIdx] = srt.inBlockDestOffs[blockIdx];
+    }
+#endif
+
     // NOTE(pamartis): during "Sequence Decoding" we encode offsets so that they are either:
     //      - actual relative offsets (offset "N" means "-N" bytes relative to the current position in the output stream) with extra "+3" encoding.
     //      - "repeat" offsets relative to previous block's last sequence (not relative to previous sequence as original) minus some number of bytes
@@ -3770,9 +3812,12 @@ static void zstdgpu_ShaderEntry_FinaliseSequenceOffsets(ZSTDGPU_PARAM_INOUT(zstd
     // so here we check if they are actually "repeat" offsets relative to previous block's last sequence
     if (zstdgpu_DecodeSeqRepeatOffsetEncoded(offset) > 0)
     {
+#if (0 == ZSTDGPU_USE_PREFIXED_LLEN_MLEN)
+        // NOTE(pamartis): when `ZSTDGPU_USE_PREFIXED_LLEN_MLEN` is enabled, binary search is done unconditionally
         const uint32_t seqStreamCnt = srt.inCounters[0].Seq_Streams;
         const uint32_t seqStreamIdx = zstdgpu_BinarySearch(srt.inPerSeqStreamSeqStart, 0, seqStreamCnt, seqIdx);
         const uint32_t blockIdx     = srt.inSeqStreamToBlockId[seqStreamIdx];
+#endif
         const uint32_t frameIdx     = zstdgpu_BinarySearch(srt.inPerFrameBlockCountAll, 0, frameCnt, blockIdx);
         const uint32_t seqStreamIdxFirstInFrame = srt.inPerFrameSeqStreamMinIdx[frameIdx];
 
@@ -3939,12 +3984,19 @@ static void zstdgpu_ExecuteSequences_Lit(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteSequ
                                          uint32_t seqIdx,
                                          uint32_t seqEnd)
 {
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+    const uint32_t dstBeg = dstOfs;
+#endif
     // NOTE(pamartis): LOOP is used to make sure validation layer doesn't complain about accessing `inDecompressedSequence*`
     ZSTDGPU_LOOP for (; seqIdx < seqEnd; ++seqIdx)
     {
         // NOTE(pamartis): these are still uniform variables HLSL has no way of enforcing....
         zstdgpu_Sequence seq = zstdgpu_LoadSequence(srt, seqIdx);
 
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+        seq.llen = seqIdx + 1u < seqEnd ? srt.inDecompressedSequenceLLen[zstdgpu_MinU32(seqIdx + 1u, seqEnd - 1u)] - seq.llen : (litEnd - litOfs) - ((dstEnd - dstBeg) - seq.mlen);
+        seq.mlen -= (dstOfs - dstBeg + seq.llen);
+#endif
         zstdgpu_MemCpy_DstSrc(srt.inoutUnCompressedFramesData, dstOfs, litBuf, litOfs, seq.llen, dstEnd);
         zstdgpu_MatchCopy(srt.inoutUnCompressedFramesData, dstOfs, seq, dstEnd);
     }
@@ -4047,6 +4099,10 @@ static void zstdgpu_ShaderEntry_ExecuteSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_Exe
                 // NOTE(pamartis): these are still uniform variables HLSL has no way of enforcing....
                 zstdgpu_Sequence seq = zstdgpu_LoadSequence(srt, seqIdx);
 
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+                seq.llen = seqIdx + 1u < seqEnd ? srt.inDecompressedSequenceLLen[zstdgpu_MinU32(seqIdx + 1u, seqEnd - 1u)] - seq.llen : (litSize - litCur) - (blockSize - seq.mlen);
+                seq.mlen -= (blockByteCur - blockByteBeg + seq.llen);
+#endif
                 zstdgpu_MemSet(srt.inoutUnCompressedFramesData, blockByteCur, symbol, seq.llen, blockByteEnd);
                 litCur += seq.llen;
                 zstdgpu_MatchCopy(srt.inoutUnCompressedFramesData, blockByteCur, seq, blockByteEnd);

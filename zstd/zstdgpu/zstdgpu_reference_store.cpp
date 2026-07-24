@@ -1118,11 +1118,32 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_DecompressedSequen
                 if (refSeqCount != tstSeqCount)
                     return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+                uint32_t expectedLLenPrefix = 0;
+                uint32_t expectedSizePrefix = 0;
+                for (uint32_t seqIdx = 0; seqIdx < refSeqCount; ++seqIdx)
+                {
+                    if (tstData->DecompressedSequenceLLen[tstSeqOffs + seqIdx] != expectedLLenPrefix)
+                    {
+                        return ZSTDGPU_ENUM_CONST(Validate_Failed);
+                    }
+
+                    expectedLLenPrefix += refData->DecompressedSequenceLLen[refSeqOffs + seqIdx];
+                    expectedSizePrefix += refData->DecompressedSequenceLLen[refSeqOffs + seqIdx]
+                                        + refData->DecompressedSequenceMLen[refSeqOffs + seqIdx];
+
+                    if (tstData->DecompressedSequenceMLen[tstSeqOffs + seqIdx] != expectedSizePrefix)
+                    {
+                        return ZSTDGPU_ENUM_CONST(Validate_Failed);
+                    }
+                }
+#else
                 if (0 != memcmp(&refData->DecompressedSequenceLLen[refSeqOffs], &tstData->DecompressedSequenceLLen[tstSeqOffs], refSeqCount * sizeof(refData->DecompressedSequenceLLen[0])))
                     return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
                 if (0 != memcmp(&refData->DecompressedSequenceMLen[refSeqOffs], &tstData->DecompressedSequenceMLen[tstSeqOffs], refSeqCount * sizeof(refData->DecompressedSequenceMLen[0])))
                     return ZSTDGPU_ENUM_CONST(Validate_Failed);
+#endif
 
                 if (0 != memcmp(&refData->DecompressedSequenceOffs[refSeqOffs], &tstData->DecompressedSequenceOffs[tstSeqOffs], refSeqCount * sizeof(refData->DecompressedSequenceOffs[0])))
                     return ZSTDGPU_ENUM_CONST(Validate_Failed);

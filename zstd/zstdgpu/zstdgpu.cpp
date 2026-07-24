@@ -50,7 +50,6 @@
 #include "zstdgpu_resources.h"
 
 #include "ZstdGpuComputeDestBlockOffsets.h"
-#include "ZstdGpuComputeDestSequenceOffsets.h"
 #include "ZstdGpuComputePrefixSum.h"
 #include "ZstdGpuDecodeHuffmanWeights.h"
 #include "ZstdGpuDecompressHuffmanWeights.h"
@@ -714,7 +713,6 @@ static void zstdgpu_ReCreate_SRTs(zstdgpu_SRTs & srts, ID3D12Device *device, con
 
 #define ZSTDGPU_KERNEL_LIST()                                                                                                           \
     ZSTDGPU_KERNEL(ComputeDestBlockOffsets                          ,   L"Compute Destination Block Offsets")                                   \
-    ZSTDGPU_KERNEL(ComputeDestSequenceOffsets                       ,   L"Compute Destination Sequence Offsets")                                \
     ZSTDGPU_KERNEL(ComputePrefixSum                                 ,   L"Compute Prefix of Literal and TG Count for Literal Decompression")    \
     ZSTDGPU_KERNEL(DecodeHuffmanWeights                             ,   L"Decode (from nibbles) Uncompressed Huffman Weights")                  \
     ZSTDGPU_KERNEL(DecompressHuffmanWeights                         ,   L"Decompress FSE-compressed Huffman Weights")                           \
@@ -797,7 +795,6 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
 
 #define ZSTDGPU_RUNTIME_KERNEL_LIST_SHARED()        \
     ZSTDGPU_KERNEL(ComputeDestBlockOffsets)         \
-    ZSTDGPU_KERNEL(ComputeDestSequenceOffsets)      \
     ZSTDGPU_KERNEL(ComputePrefixSum)                \
     ZSTDGPU_KERNEL(DecodeHuffmanWeights)            \
     ZSTDGPU_KERNEL(DecompressHuffmanWeights)        \
@@ -3234,6 +3231,8 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         // last written/updated by [Decompress Sequences]
         // next read by [Execute Sequences]
         setResourceUavToSrvSync(barriers, bc + 5, req->resData.gpuOnly.DecompressedSequenceLLen);
+        // last written/updated by [Decompress Sequences]
+        // next read by [Finalise Sequence Offsets] (when PREFIXED_LLEN_MLEN is set) and [Execute Sequences]
         setResourceUavToSrvSync(barriers, bc + 6, req->resData.gpuOnly.DecompressedSequenceMLen);
         bc += 7;
         // last written/updated by [Init Huffman Table and Decompress Literals]
@@ -3322,6 +3321,17 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     }
 
     {
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier with Resources for [Finalise Sequence Offsets]");
+        D3D12_RESOURCE_BARRIER barriers[1];
+        uint32_t bc = 0;
+        // last written by [Compute Dest Block Offsets]
+        // next read by [Memcpy RAW blocks, Memset RLE blocks] annd [Finalise Sequence Offsets]
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.BlockDestOffs);
+        ZSTDGPU_ASSERT(bc <= _countof(barriers));
+        cmdList->ResourceBarrier(bc, barriers);
+        PIXEndEvent(cmdList);
+    }
+    {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Finalise Sequence Offsets]");
         BIND_RS_PS_SRT(FinaliseSequenceOffsets);
         // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
@@ -3336,13 +3346,13 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier with Resources for [Memcpy RAW blocks, Memset RLE blocks] and [Execute Sequences]");
         D3D12_RESOURCE_BARRIER barriers[2];
+        uint32_t bc = 0;
         // last written/updated by [Finalise Sequence Offsets]
         // next read by [Execute Sequences]
-        setResourceUavToSrvSync(barriers, 0, req->resData.gpuOnly.DecompressedSequenceOffs);
-        // last written by [Compute Dest Block Offsets]
-        // next read by [Memcpy RAW blocks, Memset RLE blocks], [Execute Sequences], and [Compute Dest Sequence Offsets]
-        setResourceUavToSrvSync(barriers, 1, req->resData.gpuOnly.BlockDestOffs);
-        cmdList->ResourceBarrier(_countof(barriers), barriers);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.DecompressedSequenceOffs);
+        setResourceUavToSrvSync(barriers, bc ++, req->resData.gpuOnly.DestSequenceOffsets);
+        ZSTDGPU_ASSERT(bc <= _countof(barriers));
+        cmdList->ResourceBarrier(bc, barriers);
         PIXEndEvent(cmdList);
     }
 
@@ -3405,15 +3415,6 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         D3D12_RESOURCE_BARRIER barriers[1];
         setResourceUavToSrvSync(barriers, 0, req->resData.gpuOnly.Counters);
         cmdList->ResourceBarrier(_countof(barriers), barriers);
-        PIXEndEvent(cmdList);
-    }
-    if (0) /** IMPORTANT: requires DecompressedSequencesMLen to contain inclusive prefix of total sequence sizes */
-    {
-        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Compute Dest Sequence Offsets]");
-        BIND_RS_PS_SRT(ComputeDestSequenceOffsets);
-
-        zstdgpu_Dispatch32Bit(cmdList, ZSTDGPU_TG_COUNT(req->zstdUncompressedSeqElemCountMax, 256), 1, 0);
-
         PIXEndEvent(cmdList);
     }
     /* It's needed because Counters are updated during Seqeunce Execution */
