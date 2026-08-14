@@ -28,17 +28,17 @@ struct Consts
 
 ConstantBuffer<Consts>          Constants                           : register(b0);
 
-StructuredBuffer<uint32_t>      ZstdHufWIdToHufLitId                : register(t0);
-StructuredBuffer<uint32_t>      ZstdHufLitIdToLitStreamId           : register(t1);
+RWStructuredBuffer<uint32_t>    ZstdHufWIdToHufLitId                : register(u0);
+RWStructuredBuffer<uint32_t>    ZstdHufLitIdToLitStreamId           : register(u1);
 
-RWStructuredBuffer<uint32_t>    ZstdLitGroupCountToPrefix           : register(u0);
+RWStructuredBuffer<uint32_t>    ZstdLitGroupCountToPrefix           : register(u2);
 
 globallycoherent
-RWStructuredBuffer<uint32_t>    ZstdLitGroupCountToPrefixLookback   : register(u1);
+RWStructuredBuffer<uint32_t>    ZstdLitGroupCountToPrefixLookback   : register(u3);
 
-RWStructuredBuffer<zstdgpu_Counters>  ZstdCounters                  : register(u2);
+RWStructuredBuffer<zstdgpu_Counters>  ZstdCounters                  : register(u4);
 
-[RootSignature("SRV(t0), SRV(t1), UAV(u0), UAV(u1), UAV(u2), RootConstants(b0, num32BitConstants=3)")]
+[RootSignature("UAV(u0), UAV(u1), UAV(u2), UAV(u3), UAV(u4), RootConstants(b0, num32BitConstants=3)")]
 [numthreads(kzstdgpu_TgSizeX_PrefixSum_LiteralCount, 1, 1)]
 void main(uint2 groupId : SV_GroupId, uint threadId : SV_GroupThreadId)
 {

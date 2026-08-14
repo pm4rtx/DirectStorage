@@ -34,7 +34,7 @@ groupshared uint32_t GS_Lds[kzstdgpu_InitHuffmanTableAndDecompressLiterals_LdsSi
 #define __XBOX_ENABLE_WAVE32 1
 #endif
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors=8), UAV(u0, numDescriptors=1))")]
+[RootSignature("DescriptorTable(UAV(u0, numDescriptors=9))")]
 [numthreads(kzstdgpu_TgSizeX_DecompressLiterals, 1, 1)]
 void main(uint groupId : SV_GroupId, uint i : SV_GroupThreadId)
 {

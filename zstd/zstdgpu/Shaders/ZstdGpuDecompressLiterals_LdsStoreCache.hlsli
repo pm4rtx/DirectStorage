@@ -70,7 +70,7 @@ groupshared uint32_t GS_Lds[kzstdgpu_DecompressLiterals_LdsStoreCache_LdsSize];
 #define ZSTDGPU_LDS GS_Lds
 #include "../zstdgpu_lds_hlsl.h"
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors=9), UAV(u0, numDescriptors=2)), RootConstants(b0, num32BitConstants=2)")]
+[RootSignature("DescriptorTable(UAV(u0, numDescriptors=11)), RootConstants(b0, num32BitConstants=2)")]
 [numthreads(kzstdgpu_TgSizeX_DecompressLiterals_LdsStoreCache, 1, 1)]
 void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {

@@ -30,7 +30,7 @@ ZSTDGPU_COMPUTE_DEST_SEQUENCE_OFFSETS_SRT()
 
 #define NUM_THREADS 256
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors=5), UAV(u0, numDescriptors=1)), RootConstants(b0, num32BitConstants=2)")]
+[RootSignature("DescriptorTable(UAV(u0, numDescriptors=6)), RootConstants(b0, num32BitConstants=2)")]
 [numthreads(NUM_THREADS, 1, 1)]
 void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {

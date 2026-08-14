@@ -781,10 +781,7 @@ D3D12AID_API void d3d12aid_MappedBuffer_Create(d3d12aid_MappedBuffer *outBuffer,
         }
     }
 
-    if (heapType == D3D12_HEAP_TYPE_READBACK)
-    {
-        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-    }
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
     outBuffer->bufGpu = d3d12aid_Resource_CreateCommitted_WithHeapType(device, &desc, D3D12_HEAP_TYPE_DEFAULT);
 
     outBuffer->offsInBytes  = 0;

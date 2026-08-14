@@ -39,19 +39,19 @@ RWStructuredBuffer<uint32_t>    ZstdPerSeqStreamFinalOffset2Lookback :register(u
 globallycoherent
 RWStructuredBuffer<uint32_t>    ZstdPerSeqStreamFinalOffset3Lookback :register(u5);
 
-StructuredBuffer<uint32_t>      ZstdPerFrameSeqStreamMinIdx         : register(t0);
+RWStructuredBuffer<uint32_t>    ZstdPerFrameSeqStreamMinIdx         : register(u6);
 
-StructuredBuffer<uint32_t>      ZstdFrameBlockCountAll              : register(t1);
+RWStructuredBuffer<uint32_t>    ZstdFrameBlockCountAll              : register(u7);
 
-StructuredBuffer<uint32_t>      ZstdSeqStreamToBlockId              : register(t2);
+RWStructuredBuffer<uint32_t>    ZstdSeqStreamToBlockId              : register(u8);
 
-StructuredBuffer<zstdgpu_Counters>     ZstdCounters                 : register(t3);
+RWStructuredBuffer<zstdgpu_Counters>   ZstdCounters                 : register(u9);
 
 #if defined(__XBOX_SCARLETT)
 #   define __XBOX_ENABLE_WAVE32 1
 #endif
 
-[RootSignature("UAV(u0), UAV(u1), UAV(u2), UAV(u3), UAV(u4), UAV(u5), SRV(t0), SRV(t1), SRV(t2), SRV(t3), RootConstants(b0, num32BitConstants=3)")]
+[RootSignature("UAV(u0), UAV(u1), UAV(u2), UAV(u3), UAV(u4), UAV(u5), UAV(u6), UAV(u7), UAV(u8), UAV(u9), RootConstants(b0, num32BitConstants=3)")]
 [numthreads(kzstdgpu_TgSizeX_PrefixSequenceOffsets, 1, 1)]
 void main(uint2 groupId : SV_GroupId, uint threadId : SV_GroupThreadId)
 {

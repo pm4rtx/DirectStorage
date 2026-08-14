@@ -64,7 +64,7 @@ groupshared uint32_t Lds[kzstdgpu_InitFseTable_Experimental_LdsSize];
 #define ZSTDGPU_LDS Lds
 #include "../zstdgpu_lds_hlsl.h"
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors = 3), UAV(u0, numDescriptors=1)), RootConstants(b0, num32BitConstants=3)")]
+[RootSignature("DescriptorTable(UAV(u0, numDescriptors=4)), RootConstants(b0, num32BitConstants=3)")]
 [numthreads(kzstdgpu_TgSizeX_InitFseTable, 1, 1)]
 void main(uint2 groupId2 : SV_GroupId, uint32_t i : SV_GroupThreadId)
 {

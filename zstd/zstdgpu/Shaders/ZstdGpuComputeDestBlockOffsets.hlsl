@@ -29,7 +29,7 @@ ConstantBuffer<Consts> Constants : register(b0);
 ZSTDGPU_COMPUTE_DEST_BLOCK_OFFSETS_SRT()
 #include "../zstdgpu_srt_decl_undef.h"
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors=3), UAV(u0, numDescriptors=1)), RootConstants(b0, num32BitConstants=3)")]
+[RootSignature("DescriptorTable(UAV(u0, numDescriptors=4)), RootConstants(b0, num32BitConstants=3)")]
 [numthreads(kzstdgpu_TgSizeX_ComputeDestBlockOffset, 1, 1)]
 void main(uint2 groupId : SV_GroupId, uint threadId : SV_GroupThreadId)
 {

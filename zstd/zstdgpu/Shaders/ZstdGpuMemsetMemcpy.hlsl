@@ -29,13 +29,13 @@ ConstantBuffer<Consts>                  Constants                           : re
 ZSTDGPU_MEMSET_MEMCPY_SRT()
 #include "../zstdgpu_srt_decl_undef.h"
 
-StructuredBuffer<uint32_t>              ZstdInBlockSizePrefixTyped          : register(t3);
+RWStructuredBuffer<uint32_t>              ZstdInBlockSizePrefixTyped        : register(u4);
 
-StructuredBuffer<zstdgpu_OffsetAndSize> ZstdInBlocksRefsTyped               : register(t4);
+RWStructuredBuffer<zstdgpu_OffsetAndSize> ZstdInBlocksRefsTyped             : register(u5);
 
-StructuredBuffer<uint32_t>              ZstdInGlobalBlockIndexTyped         : register(t5);
+RWStructuredBuffer<uint32_t>              ZstdInGlobalBlockIndexTyped       : register(u6);
 
-[RootSignature("DescriptorTable(SRV(t0, numDescriptors=3), UAV(u0, numDescriptors=1)), SRV(t3), SRV(t4), SRV(t5), RootConstants(b0, num32BitConstants=3)")]
+[RootSignature("DescriptorTable(UAV(u0, numDescriptors=4)), UAV(u4), UAV(u5), UAV(u6), RootConstants(b0, num32BitConstants=3)")]
 [numthreads(kzstdgpu_TgSizeX_MemsetMemcpy, 1, 1)]
 void main(uint2 groupId : SV_GroupId, uint i : SV_GroupThreadId)
 {

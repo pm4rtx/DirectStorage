@@ -1610,10 +1610,10 @@ static int demoRun(void *demoCtx)
                 uint32_t bufferCount = 0;
                 if (testSourceInGpuMemory > 0)
                 {
-                    d3d12aid_MappedBuffer_EndTransfer(&barriers[bufferCount ++], &zstdCompressedFramesMemory, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                    d3d12aid_MappedBuffer_EndTransfer(&barriers[bufferCount ++], &zstdCompressedFramesRefs, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                    d3d12aid_MappedBuffer_EndTransfer(&barriers[bufferCount ++], &zstdCompressedFramesMemory, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                    d3d12aid_MappedBuffer_EndTransfer(&barriers[bufferCount ++], &zstdCompressedFramesRefs, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
                 }
-                d3d12aid_MappedBuffer_EndTransfer(&barriers[bufferCount ++], &zstdUnCompressedFramesRefs, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                d3d12aid_MappedBuffer_EndTransfer(&barriers[bufferCount ++], &zstdUnCompressedFramesRefs, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
 
                 cmdList->ResourceBarrier(bufferCount, barriers);
             }
