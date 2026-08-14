@@ -1071,8 +1071,8 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
         {
             ZSTDGPU_KERNEL_MAP(DecompressLiterals, DecompressLiterals_LdsStoreCache64_16);
             context->DecompressLiterals_LdsStoreCache_StreamsPerGroup = 16;
-            ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_SingleStream_ScalarFseLoad32);
-            context->DecompressSequences_StreamsPerGroup = 1;
+            ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_MultiStream_8_LdsOutCache_64);
+            context->DecompressSequences_StreamsPerGroup = kzstdgpu_TgSizeX_DecompressSequences / 8;
             ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences64);
         }
         else if (desc.VendorId == 0x10de)
@@ -1097,16 +1097,16 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
         {
             ZSTDGPU_KERNEL_MAP(DecompressLiterals, DecompressLiterals_LdsStoreCache128_8);
             context->DecompressLiterals_LdsStoreCache_StreamsPerGroup = 8;
-            ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_SingleStream_LdsFseCache128);
-            context->DecompressSequences_StreamsPerGroup = 1;
+            ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_MultiStream_8_LdsOutCache_64);
+            context->DecompressSequences_StreamsPerGroup = kzstdgpu_TgSizeX_DecompressSequences / 8;
             ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences128);
         }
         else //if (desc.VendorId == 0x8086 || featureOptions1.WaveLaneCountMax == 32)
         {
             ZSTDGPU_KERNEL_MAP(DecompressLiterals, DecompressLiterals_LdsStoreCache32_16);
             context->DecompressLiterals_LdsStoreCache_StreamsPerGroup = 16;
-            ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_SingleStream_LdsFseCache32);
-            context->DecompressSequences_StreamsPerGroup = 1;
+            ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_MultiStream_8_LdsOutCache_64);
+            context->DecompressSequences_StreamsPerGroup = kzstdgpu_TgSizeX_DecompressSequences / 8;
             ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences32);
         }
 #endif
