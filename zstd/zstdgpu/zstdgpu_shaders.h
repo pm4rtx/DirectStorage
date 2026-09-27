@@ -507,7 +507,7 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
     }
     while (0 == lastBlock);
 
-    if (statusFlag & kzstdgpu_FrameStatusFlag_ChecksumBitSet)
+    ZSTDGPU_BRANCH if (statusFlag & kzstdgpu_FrameStatusFlag_ChecksumBitSet)
     {
         zstdgpu_Forward_BitBuffer_Refill(bits, 32);
         zstdgpu_Forward_BitBuffer_Pop(bits, 32);
