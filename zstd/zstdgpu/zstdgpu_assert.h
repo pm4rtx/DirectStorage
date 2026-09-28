@@ -35,6 +35,15 @@
 #       include <tta_assert.h>
 #       define ZSTDGPU_ASSERT(cond) TTA_ASSERT(cond)
 #       define ZSTDGPU_ASSERT_MSG(cond, msg, ...) TTA_ASSERT_MSG(cond, msg, __VA_ARGS__)
+
+#       define ZSTDGPU_ASSERT_IF(cond) TTA_ASSERT_IF(cond)
+#       define ZSTDGPU_ASSERT_IF_MSG(cond, msg, ...) TTA_ASSERT_IF_MSG(cond, msg, __VA_ARGS__)
+
+#       define ZSTDGPU_ASSERT_RETV(cond, retv) TTA_ASSERT_RET(cond, retv)
+#       define ZSTDGPU_ASSERT_RETV_MSG(cond, retv, msg, ...) TTA_ASSERT_RET_MSG(cond, retv, msg, __VA_ARGS__)
+
+#       define ZSTDGPU_ASSERT_RET(cond) do { ZSTDGPU_ASSERT_IF(cond) { } else return; } while (0)
+#       define ZSTDGPU_ASSERT_RET_MSG(cond, msg, ...) do { ZSTDGPU_ASSERT_IF_MSG(cond, msg, __VA_ARGS__) { } else return; } while (0)
 #   endif
 #endif
 

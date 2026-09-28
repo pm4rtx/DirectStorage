@@ -27,7 +27,7 @@ void main()
 
     zstdgpu_Srt_Fill(srt);
 
-    if (srt.stage == 0)
+    ZSTDGPU_BRANCH if (srt.stage == 0)
     {
         // Block-count dependent slots (valid after Stage 0 ParseFrames :: Count Blocks)
         const uint32_t cmpBlockCount = srt.inoutCounters[0].Blocks_CMP;
@@ -62,7 +62,7 @@ void main()
         srt.inoutPredicate[0] = predicateMask; // lower 32-bits of Stage 1 predicate
         srt.inoutPredicate[2] = predicateMask; // lower 32-bits of Stage 2 predicate
     }
-    else if (srt.stage == 1)
+    else ZSTDGPU_BRANCH if (srt.stage == 1)
     {
         const uint32_t litByteCount = srt.inoutCounters[0].HUF_Streams_DecodedBytes;
         const uint32_t seqElemCount = srt.inoutCounters[0].Seq_Streams_DecodedItems;

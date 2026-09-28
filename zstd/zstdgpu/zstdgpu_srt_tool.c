@@ -36,48 +36,118 @@
 #define STB_DS_IMPLEMENTATION
 #include "stb_ds.h"
 
-#define MAX_GROUPS      32
-#define MAX_SRTS        64
-#define MAX_PASSES      256
-#define MAX_ENTRIES     64
-#define MAX_CONSTS      32
-#define MAX_RESOURCES   256
 #define MAX_ROOT_DWORDS 64
 #define STAGE_COUNT     3
 
+#define kGroupBindKindCount 2
+
 enum
 {
+    /** corresponds to non-RW objects in HLSL and D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE in D3D12 */
     kAccessRO = 0,
+
+    /** corresponds to non-RW objects in HLSL and D3D12_RESOURCE_STATE_UNORDERED_ACCESS in D3D12 */
     kAccessRW = 1,
-    kAccessRNW = 2
+
+    /**
+     *  exists to establish a promise the shader binds the resource as RW resource but never writes
+     *  so the barrier between two passes with RNW access can be avoided
+     */
+    kAccessRNW = 2,
+
+    /** exists solely to track the fact that some buffers are required to be in indirect state (in D3D12)
+     *  it doesn't generate any binding code for D3D12 */
+    kAccessIndirect = 3,
+
+    /** exists solely to merge kAccessIndirect and kAccessRO together in `accessMerge` */
+    kAccessROIndirect = 4,
+
+    /** exists to establish a promise in the pass declaration that the shader isn't going to use
+     *  the resource so if resource transition is required, the barrier could be deferred or skipped */
+    kAccessNone = 5
 };
+
+/** Indexed by kAccessRO..kAccessROIndirect, in enum order; kAccessNone never reaches emission. */
+static const char *const kAccessTokenText[] =
+{
+    "kzstdgpu_Srt_Access_ShaderRead",           /* kAccessRO         */
+    "kzstdgpu_Srt_Access_ShaderReadWrite",      /* kAccessRW         */
+    "kzstdgpu_Srt_Access_ShaderReadNoWrite",    /* kAccessRNW        */
+    "kzstdgpu_Srt_Access_IndirectRead",         /* kAccessIndirect   */
+    "kzstdgpu_Srt_Access_ShaderIndirectRead"    /* kAccessROIndirect */
+};
+
 enum
 {
     kKindStruct = 0,
     kKindTyped = 1,
     kKindByte = 2
 };
-enum
-{
-    kConstCpu = 0,
-    kConstIndirect = 1,
-    kConstInline = 2
-};
+
 enum
 {
     Direct = 0,
     Indirect = 1
 };
+
 enum
 {
-    Stage0 = 1 << 0,
-    Stage1 = 1 << 1,
-    Stage2 = 1 << 2
+    Stage0 = 0,
+    Stage1 = 1,
+    Stage2 = 2
 };
 
-/**
- *  Error and warning reporting
- */
+enum
+{
+    /** Heap bind group: corresponds to a descriptor table in D3D12/HLSL */
+    kGroupHeap          = 0,
+
+    /** Root bind group: corresponds to a range of root descriptors in D3D12/HLSL */
+    kGroupRoot          = 1,
+
+    /** Indirect const group: a range of constants that correspond to RootConstants block in D3D12/HLSL that is set by indirect Dispatch */
+    kGroupConstIndirect = 2,
+
+    /** Const group: a range of constants that correspond to RootConstants block in D3D12/HLSL */
+    kGroupConst         = 3,
+
+    /** Inline const group: a range of constants that are set within shader */
+    kGroupConstInline   = 4,
+
+    /** A group of buffers driving indirect dispatch, corresponds to indirect arguments and counts buffers in D3D12 */
+    kGroupIndirect      = 5,
+
+    kGroupTypeCount     = 6
+};
+
+static const char *const kGroupTypeSufx[kGroupTypeCount] =
+{
+    "HeapGroup",
+    "RootGroup",
+    "ConstIndirectGroup",
+    "ConstGroup",
+    "ConstInlineGroup",
+    "IndirectGroup"
+};
+
+static const char *const kGroupTypeDesc[kGroupTypeCount] =
+{
+    "heap bind group",
+    "root bind group",
+    "indirect constant group",
+    "constant group",
+    "inline constant group",
+    "indirect buffer group"
+};
+
+
+static const uint16_t kBoundConstKinds[2] = { kGroupConstIndirect, kGroupConst };
+
+static int groupTypeIsConst(uint16_t type)
+{
+    return kGroupConstIndirect == type || kGroupConst == type || kGroupConstInline == type;
+}
+
 static int  g_errorCount = 0;
 
 static void fail(_Printf_format_string_ const char *fmt, ...)
@@ -103,9 +173,7 @@ static void warn(_Printf_format_string_ const char *fmt, ...)
     va_end(args);
 }
 
-/**
- *  String interning via stb_ds.h::shmap
- */
+/** Append-only string-map index: 0 is error, 1 is empty, and 0xffff is never allocated. */
 typedef uint16_t    NameId;
 
 static const NameId kNameIdFull = 0xffff;
@@ -116,7 +184,6 @@ typedef struct CStrToNameId
 {
     char  *key; /**< owned by the map's string arena */
     size_t len;
-    NameId idx;
 } CStrToNameId;
 
 static CStrToNameId *gCStrToNameId = NULL;
@@ -128,8 +195,8 @@ __pragma(warning(disable : 4090))
 
 static NameId cstrIntern(const char *cstr)
 {
-    CStrToNameId *cstr2name = NULL;
-    CStrToNameId  cstr2nameS;
+    CStrToNameId cstr2nameS;
+    ptrdiff_t    found;
 
     if (NULL == gCStrToNameId)
     {
@@ -137,35 +204,28 @@ static NameId cstrIntern(const char *cstr)
 
         cstr2nameS.key = "(error)";
         cstr2nameS.len = strlen(cstr2nameS.key);
-        cstr2nameS.idx = kNameIdError;
         shputs(gCStrToNameId, cstr2nameS);
 
         cstr2nameS.key = "";
         cstr2nameS.len = strlen(cstr2nameS.key);
-        cstr2nameS.idx = kNameIdEmpty;
         shputs(gCStrToNameId, cstr2nameS);
     }
 
-    cstr2name = shgetp_null(gCStrToNameId, cstr);
-    if (NULL == cstr2name)
+    found = shgeti(gCStrToNameId, cstr);
+    if (-1 == found)
     {
-        NameId name = (NameId)shlenu(gCStrToNameId);
-        if (name == kNameIdFull)
+        const size_t rawLen = shlenu(gCStrToNameId);
+        if (rawLen >= kNameIdFull)
         {
             fail("`gCStrToNameId` is full. Increase `NameId` bit width");
             return kNameIdError;
         }
         cstr2nameS.key = cstr;
         cstr2nameS.len = strlen(cstr2nameS.key);
-        cstr2nameS.idx = name;
         shputs(gCStrToNameId, cstr2nameS);
-        return name;
+        return (NameId)rawLen;
     }
-    else
-    {
-        assert(cstr2name->key == gCStrToNameId[cstr2name->idx].key && "Pointers are supposed to be identical");
-        return cstr2name->idx;
-    }
+    return (NameId)found;
 }
 #ifdef _MSC_VER
 __pragma(warning(pop))
@@ -173,123 +233,216 @@ __pragma(warning(pop))
 
 static const char *nameToCStr(NameId id)
 {
-    assert(id == gCStrToNameId[id].idx && "Validation is supposed to hold");
+    assert((size_t)id < shlenu(gCStrToNameId) && "NameId out of range");
     return gCStrToNameId[id].key;
 }
 
 static size_t nameToCStrLen(NameId id)
 {
-    assert(id == gCStrToNameId[id].idx && "Validation is supposed to hold");
+    assert((size_t)id < shlenu(gCStrToNameId) && "NameId out of range");
     return gCStrToNameId[id].len;
 }
 
 typedef struct Entry
 {
-    uint16_t access : 2;
+    /** Default access specified by SRT: kAccess{RO,RW,RNW,Indirect} */
+    uint16_t bindAccess : 3;
+
+    /** The actual access a pass inherits from SRT or overrides: kAccess{RO,RW,RNW,Indirect} + optionally {None} */
+    uint16_t realAccess : 3;
+
     uint16_t kind   : 2;
     uint16_t glc    : 1;
-    uint16_t mod    : 1;
-    uint16_t reg    : 10;
+    uint16_t pad    : 7;
 
     NameId   hlslType;
     NameId   dataType;
 
-    /** The name of the resource that must be bound to this bind entry, also bind entry name */
-    NameId name;
+    /** Shader-facing slot name, unchanged by resource rebinding within pass */
+    NameId   bindName;
 
-    /** The alias suffix used to distinguish bind entries populated from the same resource. If this is other than "" (empty string)
-     *  it means this bind entry is going to be named as `name_asfx` in the shader but the resource that is going to be bound is still `name
-     */
-    NameId asfx;
+    /** CPU resource name, originally identical to `bindName`, though may differ from `bindName`
+     *  if SRT slot is alias or there's a pass that rebinds the resource with separate resource name. */
+    NameId   resName;
+} Entry;
 
+/** The three strings derived from an Entry's identity.
+ *  They are deliberately *not* in Entry because it's used as a hash key */
+typedef struct EntryText
+{
     NameId macroText;
     NameId memberText;
     NameId globalText;
-} Entry;
+} EntryText;
 
 typedef struct Group
 {
     NameId   name;
+
+    /** kNameIdError for a declared template; Pass::binderName for a pass-private clone. */
+    NameId   pass;
+} Group;
+
+typedef struct GroupData
+{
+    /** if this bind group (B) was cloned from another bind group (A) because pass
+     *  has overridden the binding (different resource name or access):
+     *      - `base` holds `groupId` of group A;
+     *  otherwise:
+     *      - `base` holds `groupId` of itself
+     */
+    uint16_t base;
+
+    /** assigned HLSL register space */
     uint16_t space;
-    Entry    entries[MAX_ENTRIES];
+
+    /** 1 - means this group is not explicitly named, so can't be re-used by other SRTs and doesn't emit a header, 0 - otherwise */
+    uint16_t unnamed;
+
+    /** Start in gConstIds for any constant kind, otherwise in gEntryIds. */
+    uint16_t entryStart;
     uint16_t entryCount;
-    uint16_t srvCount;
-    uint16_t uavCount;
+
+    /** Column width for EntryText::macroText or Const::type, padded before emission. */
+    uint16_t maxMacroLen;
+
+    /** Column width for EntryText::memberText or Const::name, padded before emission. */
+    uint16_t maxMemberLen;
+
+    /** Column width for EntryText::globalText or Const::name, padded before emission. */
+    uint16_t maxGlobalLen;
 
     /** Bit N set when this descriptor table needs a copy in stage N.
+     *  Zero means no pass binds this heap group.
      *  It's currently for bind group matching D3D12 descriptor table versioning:
      *      - a new stage re-creates D3D12 descriptors from D3D12 resources.
      *      - so whenever resource change (e.g. re-created or initialised for the first time) -- a new D3D12 descriptor table is created
      */
     uint32_t stageMask;
-} Group;
+
+    NameId   cloneSuffix;
+
+    uint16_t tableOwner;
+
+    /** Emitted name for a bound heap owner, assigned once when its ownership is settled. */
+    NameId   tableName;
+
+    uint16_t type;
+} GroupData;
 
 typedef struct Const
 {
-    int    kind;
-    NameId type;
-    NameId name;
+    NameId      type;
+    NameId      name;
 } Const;
 
 typedef struct Srt
 {
-    NameId name;
+    /** SRT name, used as key in gSrts lookup */
+    NameId key;
 
-    int    groupIdx[MAX_ENTRIES];
-    int    groupCount;
+    /** This SRT's range in gGroupIds, preserving declaration order across kinds. */
+    uint16_t groupStart;
+    uint16_t groupCount;
 
-    Entry  rootBufs[MAX_ENTRIES];
-    int    rootBufCount;
+    /** This SRT's contiguous range in each gGroupIdsByType[type] array. */
+    uint16_t perTypeGroupStart[kGroupTypeCount];
+    uint16_t perTypeGroupCount[kGroupTypeCount];
 
-    Const  consts[MAX_CONSTS]; /**< every constant */
-    int    constCount;
+    /** Derived from indirect inputs when the SRT declaration closes. */
+    uint16_t indirect : 1;
 
-    Const  boundConsts[MAX_CONSTS]; /**< the non-CONST_INLINE subset, declaration order.*/
-    int    boundConstCount;
+    /** Stage index, not a mask; checked against the earliest pass stage. */
+    uint16_t declStage : 2;
 
-    Const  inlineConsts[MAX_CONSTS]; /**< the CONST_INLINE subset, declaration order */
-    int    inlineConstCount;
+    /** At least one explicit pass was declared, suppressing the implicit default pass.
+     *  Does not imply that any resource or access changed. */
+    uint16_t passOverrides : 1;
 
-    int    stageMask; /**< union of the stage masks of this SRT's bind groups; 0 when it uses none, which means one unsuffixed binder */
+    /** Set only if resName changes (not access) */
+    uint16_t hasResourceRebindings : 1;
 
-    int    cpuConstCount; /**< only read to enforce INDIRECT-before-CPU declaration order */
-    int    indirect;      /**< dispatch kind declared on ZSTDGPU_SRT_BEGIN */
+    uint16_t hasPass : 1;
+    uint16_t earliestPassStage : 2;
+    uint16_t hasIndirectPass : 1;
+    uint16_t padding : 7;
 } Srt;
+
+/** Make sure `declStage` and `earliestPassStage` can hold stage count (<=4),
+ *  otherwise bitfield width needs to be increased  */
+typedef char zstdgpu_srt_assert_declStage_holds_STAGE_COUNT[(STAGE_COUNT <= 4) ? 1 : -1];
 
 typedef struct Pass
 {
-    int    srtIdx;
-    int    indirect;
-    NameId name; /**< kNameIdError for the implicit default pass -- it has no name */
-    NameId resources[MAX_ENTRIES];
+    int      srtIdx;
+    int      indirect;
+    NameId   name; /**< always set; the pass addDefaultPasses() synthesises is named "Default" */
+
+    /** Submission stage index; explicit passes declare it, the implicit pass inherits declStage. */
+    int      stage;
+
+    /** <Srt> for the implicit default pass, <Srt>_<Pass> otherwise. */
+    NameId   binderName;
+
+    /** Ranges in gGroupIdsByType[type], shared with the SRT until that kind is first modified.
+     *  Substitution preserves group and entry positions. */
+    uint16_t perTypeGroupStart[kGroupBindKindCount];
+    uint16_t perTypeGroupCount[kGroupBindKindCount];
 } Pass;
 
-static Group  g_groups[MAX_GROUPS];
-static int    g_groupCount = 0;
+typedef struct EntryId { uint16_t id; } EntryId;
+typedef struct ConstId { uint16_t id; } ConstId;
+typedef struct GroupId { uint16_t id; } GroupId;
 
-static Srt    g_srts[MAX_SRTS];
-static int    g_srtCount = 0;
+static const GroupId kInvalidGroup = { UINT16_MAX };
 
-static Pass   g_passes[MAX_PASSES];
-static int    g_passCount = 0;
+static int groupIdIsValid(GroupId id) { return id.id != kInvalidGroup.id; }
 
-static NameId g_resources[MAX_RESOURCES];
-static int    g_resourceCount = 0;
+typedef struct EntryKey { Entry key; } EntryKey;
+typedef struct ConstKey { Const key; } ConstKey;
+typedef struct GroupKey { Group key; } GroupKey;
 
-static int    g_currentGroup = -1;
+static EntryKey  *gEntries = NULL;
+static EntryText *gEntryTexts = NULL; /* parallel to gEntries, indexed by EntryId */
+static EntryId   *gEntryIds = NULL;
+
+static ConstKey  *gConsts = NULL;
+static ConstId   *gConstIds = NULL;
+
+static GroupKey  *gGroups = NULL;
+static GroupData *gGroupData = NULL;  /* parallel to gGroups, indexed by GroupId */
+static GroupId   *gGroupIds = NULL;
+
+/** Per-kind group-id ranges shared by SRTs and unmodified passes. */
+static GroupId *gGroupIdsByType[kGroupTypeCount] = { NULL };
+
+static int       gEntryDeclCount = 0;
+static int       gConstDeclCount = 0;
+
+static Srt    *gSrts = NULL;
+static Pass   *gPasses = NULL;
+
+static size_t srtCount(void)
+{
+    return hmlenu(gSrts);
+}
+
+static size_t passCount(void)
+{
+    return arrlenu(gPasses);
+}
+
+static GroupId g_currentGroup = { UINT16_MAX }; /* kInvalidGroup */
+
 static int    g_currentSrt = -1;
 static int    g_currentPass = -1;
 
-/**
- * A wrapper on top of stb_ds.h array to not misinterpret `char *` as raw C-string.
- * The invariant is that data is ither NULL or points to '\0' terminated C-string.
- */
+/** stb_ds character array: arrlen includes the terminating NUL; NULL represents an empty string. */
 typedef struct StrBuilder
 {
     char *data;
 } StrBuilder;
 
-/** Content length, excluding the terminator. */
 static size_t sb_Len(const StrBuilder *sb)
 {
     const size_t used = arrlenu(sb->data);
@@ -302,9 +455,6 @@ static void sb_Reset(StrBuilder *sb)
     arrsetlen(sb->data, 1);
 }
 
-/** Appends an end-of-line to a string literal at compile time. */
-#define StrLitEoL(text) text "\n"
-
 static StrBuilder *sb_AppendCStr(StrBuilder *sb, const char *text, size_t len)
 {
     const size_t used = sb_Len(sb);
@@ -314,7 +464,7 @@ static StrBuilder *sb_AppendCStr(StrBuilder *sb, const char *text, size_t len)
     return sb;
 }
 
-/** Appends a string literal. The sizeof() rejects anything that is not a literal. */
+/** Caller must supply a string literal; sizeof(lit) does not validate that contract. */
 #define sb_StrLit(sb, lit)    sb_AppendCStr(sb, lit, sizeof(lit) - 1)
 #define sb_StrLitEoL(sb, lit) sb_AppendCStr(sb, lit "\n", sizeof(lit))
 #define sb_ExtraLine(sb)      sb_AppendCStr(sb, "\n", sizeof("\n") - 1)
@@ -336,7 +486,7 @@ static StrBuilder *sb_Fmt(StrBuilder *sb, _Printf_format_string_ const char *fmt
 
     if (len < 0)
     {
-        fail("sb_Fmt: cannot format '%s'", fmt);
+        assert(0 && "sb_Fmt: vsnprintf failed to measure a literal format");
     }
     else
     {
@@ -351,7 +501,7 @@ static StrBuilder *sb_Fmt(StrBuilder *sb, _Printf_format_string_ const char *fmt
 
 static const char *sb_CStr(StrBuilder *sb)
 {
-    return (NULL != sb->data) ? sb->data : nameToCStr(kNameIdEmpty);
+    return (NULL != sb->data) ? sb->data : "";
 }
 
 static void sb_BeginFile(StrBuilder *sb, const char *guard)
@@ -380,158 +530,767 @@ static void sb_BeginFile(StrBuilder *sb, const char *guard)
 static void sb_EndFile(StrBuilder *sb, const char *guard, const char *path)
 {
     size_t len;
-    FILE  *f;
+    FILE  *outputFile;
 
     sb_Fmt(sb, "#endif /* %s */\n", guard);
 
     len = sb_Len(sb);
 
-    f = fopen(path, "wb");
-    if (NULL == f)
+    outputFile = fopen(path, "wb");
+    if (NULL == outputFile)
     {
         fail("cannot open '%s' for writing", path);
         return;
     }
-    if (len != fwrite(sb->data, 1, len, f))
+    if (len != fwrite(sb->data, 1, len, outputFile))
     {
         fail("failed to write '%s'", path);
     }
-    fclose(f);
+    fclose(outputFile);
 
     arrfree(sb->data);
     sb->data = NULL;
 }
 
+static StrBuilder gScratch = { NULL };
+
+static NameId nameConcatWithUnderscore(NameId nameA, NameId nameB)
+{
+    sb_Str(&gScratch, nameToCStr(nameA));
+    sb_StrLit(&gScratch, "_");
+    sb_Str(&gScratch, nameToCStr(nameB));
+
+    const NameId name = cstrIntern(gScratch.data);
+    sb_Reset(&gScratch);
+    return name;
+}
+
+static NameId nameConcat2(NameId nameA, NameId nameB)
+{
+    return (kNameIdEmpty == nameB) ? nameA : nameConcatWithUnderscore(nameA, nameB);
+}
+
+static NameId nameConcatIndex(NameId prefix, const char *suffix, int index)
+{
+    NameId name;
+    sb_Str(&gScratch, nameToCStr(prefix));
+    sb_Fmt(&gScratch, "%s%d", suffix, index);
+    name = cstrIntern(gScratch.data);
+    sb_Reset(&gScratch);
+    return name;
+}
+
+typedef struct NameIdSet
+{
+    NameId key;
+} NameIdSet;
+
+static NameIdSet *gResourceNames = NULL;
+
+static int resourceCount(void)
+{
+    return (int)hmlen(gResourceNames);
+}
+
+static const char *resourceIdToCStr(int id)
+{
+    assert((size_t)id < hmlenu(gResourceNames) && "Supplied resource `id` doesn't exist");
+    return nameToCStr(gResourceNames[id].key);
+}
+
 static void registerResource(NameId name)
 {
-    int i;
-    for (i = 0; i < g_resourceCount; ++i)
-    {
-        if (g_resources[i] == name)
-        {
-            return;
-        }
-    }
-    if (g_resourceCount >= MAX_RESOURCES)
-    {
-        fail("too many resources at '%s'", nameToCStr(name));
-        return;
-    }
-    g_resources[g_resourceCount] = name;
-    g_resourceCount += 1;
+    NameIdSet entry = { name };
+    hmputs(gResourceNames, entry);
 }
 
-static int findGroup(NameId name)
+typedef struct GroupRange
 {
-    int i;
-    for (i = 0; i < g_groupCount; ++i)
-    {
-        if (g_groups[i].name == name)
-        {
-            return i;
-        }
-    }
-    return -1;
+    const GroupId *ids;
+    size_t         count;
+} GroupRange;
+
+static GroupRange srtGroupRangePerType(const Srt *srt, uint16_t type)
+{
+    GroupRange range;
+
+    assert(type < kGroupTypeCount && "unknown group kind");
+    range.count = srt->perTypeGroupCount[type];
+    range.ids = (0 == range.count) ? NULL : gGroupIdsByType[type] + srt->perTypeGroupStart[type];
+    return range;
 }
 
-static void groupBegin(const char *name, int stageMask)
+static GroupRange passGroupRangePerType(const Pass *pass, uint16_t type)
 {
-    if (g_groupCount >= MAX_GROUPS)
+    GroupRange range;
+
+    assert(type < kGroupBindKindCount && "a pass keeps ranges only for the bind kinds");
+    range.count = pass->perTypeGroupCount[type];
+    range.ids = (0 == range.count) ? NULL : gGroupIdsByType[type] + pass->perTypeGroupStart[type];
+    return range;
+}
+
+#define forEachGroup(gid, ...)                                                                     \
+    do                                                                                             \
+    {                                                                                              \
+        const uint16_t allGroupCnt_ = (uint16_t)hmlenu(gGroups);                                   \
+        for (uint16_t idx_ = 0; idx_ < allGroupCnt_; ++idx_)                                       \
+        {                                                                                          \
+            const GroupId  gid = { idx_ };                                                         \
+            GroupData     *groupData = groupDataGet(gid);                                          \
+            const uint16_t groupType = groupData->type;                                            \
+            (void)groupData;                                                                       \
+            (void)groupType;                                                                       \
+            __VA_ARGS__                                                                            \
+        }                                                                                          \
+    } while (0)
+
+#define forEachStageTable(stage, gid, ...)                                                          \
+    forEachGroup(gid,                                                                               \
+    {                                                                                               \
+        if (kGroupHeap == groupType && groupOwnsTable(gid) && 0 != (groupData->stageMask & (1u << (stage))))\
+        {                                                                                           \
+            __VA_ARGS__                                                                             \
+        }                                                                                           \
+    })
+
+#define forEachSrtGroup(srt, gid, groupIdx, ...)                                                   \
+    do                                                                                             \
+    {                                                                                              \
+        const Srt *srt_ = (srt);                                                                   \
+        for (uint16_t groupIdx = 0; groupIdx < srt_->groupCount; ++groupIdx)                       \
+        {                                                                                          \
+            const GroupId  gid = gGroupIds[srt_->groupStart + groupIdx];                           \
+            GroupData     *groupData = groupDataGet(gid);                                          \
+            const uint16_t groupType = groupData->type;                                            \
+            (void)groupData;                                                                       \
+            (void)groupType;                                                                       \
+            __VA_ARGS__                                                                            \
+        }                                                                                          \
+    } while (0)
+
+#define forEachGroupInRange(range, gid, ...)                                                       \
+    do                                                                                             \
+    {                                                                                              \
+        const GroupRange range_ = (range);                                                         \
+        for (size_t group_ = 0; group_ < range_.count; ++group_)                                   \
+        {                                                                                          \
+            const GroupId gid = range_.ids[group_];                                                \
+            __VA_ARGS__                                                                            \
+        }                                                                                          \
+    } while (0)
+
+#define forEachEntryInGroup(gid, idx, ...)                                                         \
+    do                                                                                             \
+    {                                                                                              \
+        const GroupId    entryGroup_ = (gid);                                                      \
+        const GroupData *entryGroupData_ = groupDataGet(entryGroup_);                              \
+        assert(!groupTypeIsConst(entryGroupData_->type) && "not an entry group");                   \
+        for (uint16_t idx = 0; idx < entryGroupData_->entryCount; ++idx)                           \
+        {                                                                                          \
+            const EntryId entryId_ = gEntryIds[(uint32_t)entryGroupData_->entryStart + idx];       \
+            const Entry *entry = &gEntries[entryId_.id].key;                                       \
+            const EntryText *entryText = &gEntryTexts[entryId_.id];                                \
+            (void)entry; (void)entryText;                                                          \
+            __VA_ARGS__                                                                            \
+        }                                                                                          \
+    } while (0)
+
+#define forEachGroupEntry(range, gid, idx, ...)                                                    \
+    forEachGroupInRange(range, gid,                                                                \
+    {                                                                                              \
+        forEachEntryInGroup(gid, idx, __VA_ARGS__);                                                \
+    })
+
+#define forEachGroupConst(range, gid, idx, ...)                                                    \
+    forEachGroupInRange(range, gid,                                                                \
+    {                                                                                              \
+        const GroupData *groupData_ = groupDataGet(gid);                                           \
+        assert(groupTypeIsConst(groupData_->type) && "not a constant group");                       \
+        for (uint16_t idx = 0; idx < groupData_->entryCount; ++idx)                                \
+        {                                                                                          \
+            const Const *cst = &gConsts[gConstIds[(uint32_t)groupData_->entryStart + idx].id].key; \
+            __VA_ARGS__                                                                            \
+        }                                                                                          \
+    })
+
+#define forEachSrtBoundConst(srt, groupType, gid, idx, ...)                                        \
+    do                                                                                             \
+    {                                                                                              \
+        for (int boundKind_ = 0; boundKind_ < 2; ++boundKind_)                                     \
+        {                                                                                          \
+            const uint16_t groupType = kBoundConstKinds[boundKind_];                               \
+                                                                                                   \
+            forEachGroupConst(srtGroupRangePerType(srt, groupType), gid, idx, __VA_ARGS__);        \
+        }                                                                                          \
+    } while (0)
+
+static GroupId groupFindByName(NameId name)
+{
+    Group group = { name, kNameIdError };
+    ptrdiff_t found = hmgeti(gGroups, group);
+    if (found >= 0)
     {
-        fail("too many bind groups at '%s'", name);
-        return;
+        assert(found < (ptrdiff_t)kInvalidGroup.id && "incorrect group index returned from gGroups");
+        GroupId groupId = { (uint16_t)found };
+        return groupId;
     }
-    if (0 == stageMask || 0 != (stageMask & ~(Stage0 | Stage1 | Stage2)))
+    return kInvalidGroup;
+}
+
+static GroupData *groupDataGet(GroupId gi)
+{
+    assert((size_t)gi.id < arrlenu(gGroupData) && "group index out of range");
+    return &gGroupData[gi.id];
+}
+
+static const Group *group(GroupId gi)
+{
+    assert((size_t)gi.id < hmlenu(gGroups) && "group index out of range");
+    return &gGroups[gi.id].key;
+}
+
+static int groupIsClone(GroupId gi)
+{
+    return groupDataGet(gi)->base != gi.id;
+}
+
+static GroupId groupBase(GroupId gi)
+{
+    const GroupId base = { groupDataGet(gi)->base };
+    return base;
+}
+
+static GroupId groupTableOwner(GroupId gi)
+{
+    const GroupId owner = { groupDataGet(gi)->tableOwner };
+    return owner;
+}
+
+static int groupOwnsTable(GroupId gi)
+{
+    return groupTableOwner(gi).id == gi.id && 0 != groupDataGet(gi)->stageMask;
+}
+
+static NameId groupTableName(GroupId gi)
+{
+    const NameId name = groupDataGet(groupTableOwner(gi))->tableName;
+
+    assert(kNameIdError != name && "table names must be assigned before emission");
+    return name;
+}
+
+static const Entry *groupEntry(GroupId gi, int groupEntryIndex)
+{
+    const GroupData *groupData = groupDataGet(gi);
+
+    assert((uint32_t)groupEntryIndex < groupData->entryCount && "entry index out of range");
+    return &gEntries[gEntryIds[(uint32_t)groupData->entryStart + (uint32_t)groupEntryIndex].id].key;
+}
+
+static const EntryText *groupEntryText(GroupId gi, int groupEntryIndex)
+{
+    const GroupData *groupData = groupDataGet(gi);
+
+    assert((uint32_t)groupEntryIndex < groupData->entryCount && "entry index out of range");
+    return &gEntryTexts[gEntryIds[(uint32_t)groupData->entryStart + (uint32_t)groupEntryIndex].id];
+}
+
+static uint16_t groupEntryReg(GroupId gi, int groupEntryIndex)
+{
+    const int ro = (kAccessRO == groupEntry(gi, groupEntryIndex)->bindAccess);
+    uint16_t  shaderRegisterIndex = 0;
+    int       j;
+
+    for (j = 0; j < groupEntryIndex; ++j)
     {
-        fail("bind group '%s': stages must be Stage0, Stage1 or Stage2 combined with '|'", name);
-        stageMask = Stage0; /* keep going, so the rest of the declaration still parses cleanly */
+        shaderRegisterIndex += (uint16_t)((kAccessRO == groupEntry(gi, j)->bindAccess) == ro);
     }
-    g_currentGroup = g_groupCount++;
-    memset(&g_groups[g_currentGroup], 0, sizeof(Group));
-    g_groups[g_currentGroup].name = cstrIntern(name);
-    g_groups[g_currentGroup].space = (uint16_t)g_currentGroup + 1; /* space0 is reserved for root parameters */
-    g_groups[g_currentGroup].stageMask = stageMask;
+    return shaderRegisterIndex;
+}
+
+#define INTERN_BY_VALUE_AND_RETURN(map, keyType, keyValue, idType, onInsert, onFound)\
+    do                                                                      \
+    {                                                                       \
+        idType    id_ = { 0 };                                              \
+        ptrdiff_t found_ = hmgeti(map, keyValue);                           \
+        if (found_ >= 0)                                                    \
+        {                                                                   \
+            id_.id = (uint16_t)found_;                                      \
+            onFound;                                                        \
+        }                                                                   \
+        else                                                                \
+        {                                                                   \
+            const size_t count_ = hmlenu(map);                              \
+            if (count_ >= UINT16_MAX)                                       \
+            {                                                               \
+                fail("more than %d distinct " #map " -- widen " #idType, (int)UINT16_MAX);\
+            }                                                               \
+            else                                                            \
+            {                                                               \
+                keyType slot_;                                              \
+                slot_.key = (keyValue);                                     \
+                hmputs(map, slot_);                                         \
+                id_.id = (uint16_t)count_;                                  \
+                assert(hmgeti(map, keyValue) == (ptrdiff_t)id_.id && "stb_ds appended somewhere else"); \
+                onInsert;                                                   \
+            }                                                               \
+        }                                                                   \
+        return id_;                                                         \
+    } while (0)
+
+static NameId emitSrtBindEntryType(const Entry *entryValue);
+static NameId emitSrtBindEntryName(const Entry *entryValue, const char *roNamePrefix, const char *rwNamePrefix);
+
+static void entryTextsAdd(const Entry *entryValue)
+{
+    EntryText text;
+
+    text.macroText = emitSrtBindEntryType(entryValue);
+    text.memberText = emitSrtBindEntryName(entryValue, "in", "inout");
+    text.globalText = emitSrtBindEntryName(entryValue, "ZstdIn", "ZstdInOut");
+    arrput(gEntryTexts, text);
+    assert(arrlenu(gEntryTexts) == hmlenu(gEntries) && "gEntryTexts drifted from gEntries");
+}
+
+static EntryId entryInternValue(const Entry *entry)
+{
+    INTERN_BY_VALUE_AND_RETURN(gEntries, EntryKey, *entry, EntryId, entryTextsAdd(entry), (void)0);
+}
+
+static EntryId entryIntern(uint16_t access, uint16_t kind, uint16_t glc, const char *hlslType, const char *dataType, const char *name, const char *aliasPostfix)
+{
+    Entry entry;
+
+    gEntryDeclCount += 1;
+
+    /* Entry is a raw-byte hash key; zero its padding before interning. */
+    memset(&entry, 0, sizeof(Entry));
+    entry.bindAccess = access;
+    entry.realAccess = access;
+    entry.kind = kind;
+    entry.glc = glc;
+    entry.hlslType = cstrIntern(hlslType);
+    entry.dataType = cstrIntern(dataType);
+    entry.resName = cstrIntern(name);
+    entry.bindName = nameConcat2(entry.resName, cstrIntern(aliasPostfix));
+    return entryInternValue(&entry);
+}
+
+static void groupsAdd(uint16_t type, GroupId base)
+{
+    GroupData groupData;
+
+    memset(&groupData, 0, sizeof(groupData));
+    groupData.base = base.id;
+    groupData.type = type;
+    groupData.entryStart = (uint16_t)(groupTypeIsConst(type) ? arrlenu(gConstIds) : arrlenu(gEntryIds));
+    arrput(gGroupData, groupData);
+    assert(arrlenu(gGroupData) == hmlenu(gGroups) && "gGroupData drifted from gGroups");
+}
+
+static GroupId groupIntern(NameId name, uint16_t type)
+{
+    Group group;
+
+    memset(&group, 0, sizeof(group));
+    group.name = name;
+
+    INTERN_BY_VALUE_AND_RETURN(gGroups, GroupKey, group, GroupId, groupsAdd(type, id_), fail("bind group '%s' is declared more than once", nameToCStr(name)));
+}
+
+static void groupUpdateMaxTextLen(GroupData *groupData, NameId macro, NameId member, NameId global)
+{
+    const uint16_t macroLen = (uint16_t)nameToCStrLen(macro);
+    const uint16_t memberLen = (uint16_t)nameToCStrLen(member);
+    const uint16_t globalLen = (uint16_t)nameToCStrLen(global);
+
+    groupData->maxMacroLen = groupData->maxMacroLen > macroLen ? groupData->maxMacroLen : macroLen;
+    groupData->maxMemberLen = groupData->maxMemberLen > memberLen ? groupData->maxMemberLen : memberLen;
+    groupData->maxGlobalLen = groupData->maxGlobalLen > globalLen ? groupData->maxGlobalLen : globalLen;
+}
+
+static void groupAppendEntry(GroupId gi, EntryId id)
+{
+    GroupData *groupData = groupDataGet(gi);
+
+    if ((size_t)groupData->entryStart + (size_t)groupData->entryCount != arrlenu(gEntryIds))
+    {
+        fail("group '%s': its entries are not one uninterrupted run -- another group was declared in the middle of it", nameToCStr(group(gi)->name));
+    }
+    else
+    {
+        const EntryText *entryText = &gEntryTexts[id.id];
+
+        arrput(gEntryIds, id);
+        groupData->entryCount += 1;
+        groupUpdateMaxTextLen(groupData, entryText->macroText, entryText->memberText, entryText->globalText);
+    }
 }
 
 static void groupEnd(void)
 {
-    g_currentGroup = -1;
+    g_currentGroup = kInvalidGroup;
 }
 
-static int checkDispatch(const char *what, const char *name, int dispatch)
+static void srtAppendGroup(Srt *srt, GroupId id)
+{
+    const uint16_t type = groupDataGet(id)->type;
+    GroupId      **kind = &gGroupIdsByType[type];
+    uint16_t      *perTypeGroupStart = &srt->perTypeGroupStart[type];
+    uint16_t      *perTypeGroupCount = &srt->perTypeGroupCount[type];
+
+    assert(type < kGroupTypeCount && "unknown group kind");
+    if (arrlenu(gGroupIds) >= UINT16_MAX || arrlenu(*kind) >= UINT16_MAX)
+    {
+        fail("more than %d group uses -- widen GroupId", (int)UINT16_MAX);
+        return;
+    }
+    if (srt->groupCount > 0)
+    {
+        if ((size_t)srt->groupStart + (size_t)srt->groupCount != arrlenu(gGroupIds))
+        {
+            fail("SRT '%s': its groups are not one uninterrupted run", nameToCStr(srt->key));
+            return;
+        }
+    }
+    else
+    {
+        srt->groupStart = (uint16_t)arrlenu(gGroupIds);
+    }
+    if (*perTypeGroupCount > 0)
+    {
+        if ((size_t)*perTypeGroupStart + (size_t)*perTypeGroupCount != arrlenu(*kind))
+        {
+            fail("SRT '%s': its groups of one kind are not one uninterrupted run", nameToCStr(srt->key));
+            return;
+        }
+    }
+    else
+    {
+        *perTypeGroupStart = (uint16_t)arrlenu(*kind);
+    }
+    arrput(gGroupIds, id);
+    srt->groupCount += 1;
+    arrput(*kind, id);
+    *perTypeGroupCount += 1;
+}
+
+enum
+{
+    kTextMacro = 0,
+    kTextMember = 1,
+    kTextGlobal = 2
+};
+
+static uint16_t groupMaxLen(const GroupData *groupData, int which)
+{
+    switch (which)
+    {
+    case kTextMacro:  return groupData->maxMacroLen;
+    case kTextMember: return groupData->maxMemberLen;
+    default:          return groupData->maxGlobalLen;
+    }
+}
+
+static uint32_t srtKindMaxLen(const Srt *srt, uint16_t groupType, int which)
+{
+    uint32_t max = 0;
+
+    forEachGroupInRange(srtGroupRangePerType(srt, groupType), gid,
+    {
+        const uint16_t len = groupMaxLen(groupDataGet(gid), which);
+
+        max = max > len ? max : len;
+    });
+    return max;
+}
+
+static int srtGroupEntryCount(const Srt *srt, uint16_t type)
+{
+    int memberCount = 0;
+
+    forEachGroupInRange(srtGroupRangePerType(srt, type), gid,
+    {
+        memberCount += groupDataGet(gid)->entryCount;
+    });
+    return memberCount;
+}
+
+static ConstId constIntern(const char *type, const char *name)
+{
+    Const constantValue;
+
+    gConstDeclCount += 1;
+
+    memset(&constantValue, 0, sizeof(constantValue));
+    constantValue.type = cstrIntern(type);
+    constantValue.name = cstrIntern(name);
+
+    INTERN_BY_VALUE_AND_RETURN(gConsts, ConstKey, constantValue, ConstId, (void)0, (void)0);
+}
+
+static const Const *groupConst(GroupId gi, int constantIndex)
+{
+    const GroupData *groupData = groupDataGet(gi);
+
+    assert(groupTypeIsConst(groupData->type) && "not a constant group");
+    assert((uint32_t)constantIndex < groupData->entryCount && "constant index out of range");
+    return &gConsts[gConstIds[(uint32_t)groupData->entryStart + (uint32_t)constantIndex].id].key;
+}
+
+static void groupAppendConst(GroupId gi, ConstId id)
+{
+    GroupData *groupData = groupDataGet(gi);
+
+    if ((size_t)groupData->entryStart + (size_t)groupData->entryCount != arrlenu(gConstIds))
+    {
+        fail("group '%s': its constants are not one uninterrupted run -- another group was declared in the middle of it", nameToCStr(group(gi)->name));
+    }
+    else
+    {
+        const Const *constantValue = &gConsts[id.id].key;
+
+        arrput(gConstIds, id);
+        groupData->entryCount += 1;
+        groupUpdateMaxTextLen(groupData, constantValue->type, constantValue->name, constantValue->name);
+    }
+}
+
+static int groupHasBoundConst(GroupId gi)
+{
+    const uint16_t type = groupDataGet(gi)->type;
+
+    return (kGroupConstIndirect == type || kGroupConst == type) && groupDataGet(gi)->entryCount > 0;
+}
+
+static int groupHasHeader(GroupId gi)
+{
+    if (groupDataGet(gi)->unnamed)
+    {
+        return 0;
+    }
+    return kGroupHeap == groupDataGet(gi)->type || groupHasBoundConst(gi);
+}
+
+static int groupIsInlined(GroupId gi)
+{
+    return !groupHasHeader(gi) && (kGroupHeap == groupDataGet(gi)->type || groupHasBoundConst(gi));
+}
+
+static int groupGetD3D12RootParamCount(GroupId id)
+{
+    switch (groupDataGet(id)->type)
+    {
+        case kGroupHeap:
+            return 1;
+
+        case kGroupRoot:
+            return (int)groupDataGet(id)->entryCount;
+
+        case kGroupConstIndirect:
+        case kGroupConst:
+            return groupDataGet(id)->entryCount > 0;
+
+        case kGroupConstInline:
+        case kGroupIndirect:
+            return 0;
+
+        default:
+            assert(0 && "unknown group type");
+            return 0;
+    }
+}
+
+/** First root parameter of `id`'s template in `srt`; `kInvalidGroup` returns the SRT's total root parameter count. */
+static int srtGroupRootParam(const Srt *srt, GroupId id)
+{
+    const GroupId base = groupIdIsValid(id) ? groupBase(id) : kInvalidGroup;
+    int rootParameterIndex = 0;
+
+    forEachSrtGroup(srt, gid, grpIdx,
+    {
+        if (gid.id == base.id)
+        {
+            return rootParameterIndex;
+        }
+        rootParameterIndex += groupGetD3D12RootParamCount(gid);
+    });
+    assert(!groupIdIsValid(id) && "group is not used by this SRT");
+    return rootParameterIndex;
+}
+
+static uint16_t checkPassDispatch(const char *name, int dispatch)
 {
     if (Direct != dispatch && Indirect != dispatch)
     {
-        fail("%s '%s': dispatch must be Direct or Indirect", what, name);
+        fail("pass '%s': dispatch must be Direct or Indirect", name);
         return Direct;
     }
-    return dispatch;
+    return (uint16_t)dispatch;
 }
 
-static void srtBegin(const char *name, int dispatch)
+static void srtBegin(const char *name, int stage)
 {
-    if (g_srtCount >= MAX_SRTS)
+    const NameId nameId = cstrIntern(name);
+
+    if (g_currentSrt >= 0)
     {
-        fail("too many SRTs at '%s'", name);
+        fail("SRT '%s' begins before SRT '%s' ends", name, nameToCStr(gSrts[g_currentSrt].key));
         return;
     }
-    g_currentSrt = g_srtCount++;
-    memset(&g_srts[g_currentSrt], 0, sizeof(Srt));
-    g_srts[g_currentSrt].name = cstrIntern(name);
-    g_srts[g_currentSrt].indirect = checkDispatch("SRT", name, dispatch);
+    if (stage < 0 || stage >= STAGE_COUNT)
+    {
+        fail("SRT '%s' names stage %d, which is outside 0..%d", name, stage, STAGE_COUNT - 1);
+        return;
+    }
+
+    if (hmgeti(gSrts, nameId) >= 0)
+    {
+        fail("SRT '%s' is declared more than once", name);
+    }
+    else
+    {
+        Srt srt;
+        memset(&srt, 0, sizeof(Srt));
+        srt.key = nameId;
+        srt.declStage = (uint16_t)stage;
+        hmputs(gSrts, srt);
+        g_currentSrt = (int)srtCount() - 1;
+        assert(hmgeti(gSrts, nameId) == g_currentSrt && "stb_ds appended somewhere else");
+    }
+}
+
+#define kSlotNotDeclared kGroupTypeCount
+
+typedef struct SrtSlot
+{
+    NameId      name;
+    uint16_t    srtId;
+} SrtSlot;
+
+#define kPassNone 0xffffu
+
+typedef struct SrtSlotData
+{
+    SrtSlot  key;
+
+    /** `srtIndexSlots` sets it to `kGroupRoot` or `kGroupHeap` */
+    uint16_t groupType : 3;
+
+    /** `srtIndexSlots` sets it to `Entry::bindAccess`*/
+    uint16_t access : 3;
+
+    uint16_t padding: 10;
+
+    /** selects bind group (heap/root) index within SRT */
+    uint16_t typedGroupIdx;
+
+    /** selects entry index within specified (by `typedGroupIdx`) bind group (heap/root) */
+    uint16_t groupEntryIdx;
+
+    /** Pass index or kPassNone */
+    uint16_t statedBy;
+} SrtSlotData;
+
+static SrtSlotData *gSrtSlots = NULL;
+
+static void srtIndexSlots(uint16_t srtId)
+{
+    static const uint16_t kIndexOrder[] = { kGroupRoot, kGroupHeap };
+
+    const Srt *srt = &gSrts[srtId];
+    int        k;
+
+    for (k = 0; k < (int)(sizeof(kIndexOrder) / sizeof(kIndexOrder[0])); ++k)
+    {
+        const uint16_t type = kIndexOrder[k];
+        const GroupRange groups = srtGroupRangePerType(srt, type);
+
+        for (uint16_t typedGroupIdx = 0; typedGroupIdx < groups.count; ++typedGroupIdx)
+        {
+            const GroupId  gid        = groups.ids[typedGroupIdx];
+
+            forEachEntryInGroup(gid, groupEntryIdx,
+            {
+                const SrtSlot slot = { entry->bindName, srtId };
+
+                if (hmgeti(gSrtSlots, slot) >= 0)
+                {
+                    warn("SRT '%s' declares %s bind group entry '%s' more than once.", nameToCStr(srt->key), (kGroupRoot == type) ? "root" : "heap", nameToCStr(entry->bindName));
+                }
+                else
+                {
+                    SrtSlotData slotEntry;
+
+                    slotEntry.key           = slot;
+                    slotEntry.groupType     = type;
+                    slotEntry.access        = entry->bindAccess;
+                    slotEntry.padding       = 0;
+                    slotEntry.typedGroupIdx = typedGroupIdx;
+                    slotEntry.groupEntryIdx = groupEntryIdx;
+                    slotEntry.statedBy      = kPassNone;
+
+                    hmputs(gSrtSlots, slotEntry);
+                }
+            });
+        }
+    }
 }
 
 static void srtEnd(void)
 {
+    if (g_currentSrt >= 0)
+    {
+        Srt *srt = &gSrts[g_currentSrt];
+
+        srt->indirect = (srtGroupRangePerType(srt, kGroupIndirect).count > 0 ||
+                         srtGroupRangePerType(srt, kGroupConstIndirect).count > 0) ? Indirect : Direct;
+        srtIndexSlots((uint16_t)g_currentSrt);
+    }
     g_currentSrt = -1;
+    g_currentGroup = kInvalidGroup; /* an unterminated group block must not leak into the next SRT */
 }
 
-static void srtUseGroup(const char *name)
+static void srtUseGroup(const char *groupName)
 {
-    Srt *srt;
-    int  idx = findGroup(cstrIntern(name));
-
     if (g_currentSrt < 0)
     {
-        fail("ZSTDGPU_SRT_USE_BIND_GROUP(%s) outside of an SRT", name);
-        return;
+        fail("ZSTDGPU_SRT_USE_BIND_GROUP(%s) outside of an SRT", groupName);
     }
-    if (idx < 0)
+    else
     {
-        fail("SRT '%s' references undefined bind group '%s'", nameToCStr(g_srts[g_currentSrt].name), name);
-        return;
+        const GroupId id = groupFindByName(cstrIntern(groupName));
+
+        if (groupIdIsValid(id))
+        {
+            srtAppendGroup(&gSrts[g_currentSrt], id);
+
+            return;
+        }
+        fail("SRT '%s' references undefined bind group '%s'", nameToCStr(gSrts[g_currentSrt].key), groupName);
     }
-    srt = &g_srts[g_currentSrt];
-    if (srt->groupCount >= MAX_ENTRIES)
-    {
-        fail("SRT '%s': too many bind groups at '%s'", nameToCStr(srt->name), name);
-        return;
-    }
-    srt->groupIdx[srt->groupCount++] = idx;
-    srt->stageMask |= g_groups[idx].stageMask;
 }
 
 static const char *const kKindWord[] = { "BUFFER", "TYPED_BUFFER", "RAW_BUFFER" };
-
-static StrBuilder        gScratch = { NULL };
 
 /**
  * Expands `Entry` into the following macro:
  *      ZSTDGPU_{RO|RW}_{|TYPED_|RAW_}BUFFER[_GLC](hlslType[, dataType])
  */
-static NameId emitSrtBindEntryType(const Entry *e)
+static NameId emitSrtBindEntryType(const Entry *entryValue)
 {
     NameId name;
-    sb_Fmt(&gScratch, "ZSTDGPU_%s_%s", (kAccessRO == e->access) ? "RO" : "RW", kKindWord[e->kind]);
-    if (0 != e->glc)
+    sb_Fmt(&gScratch, "ZSTDGPU_%s_%s", (kAccessRO == entryValue->bindAccess) ? "RO" : "RW", kKindWord[entryValue->kind]);
+    if (0 != entryValue->glc)
     {
         sb_StrLit(&gScratch, "_GLC");
     }
 
-    sb_Fmt(&gScratch, "(%s", nameToCStr(e->hlslType));
-    if (kKindTyped == e->kind)
+    sb_Fmt(&gScratch, "(%s", nameToCStr(entryValue->hlslType));
+    if (kKindTyped == entryValue->kind)
     {
-        sb_Fmt(&gScratch, ", %s", nameToCStr(e->dataType));
+        sb_Fmt(&gScratch, ", %s", nameToCStr(entryValue->dataType));
     }
     sb_StrLit(&gScratch, ")");
 
@@ -540,231 +1299,500 @@ static NameId emitSrtBindEntryType(const Entry *e)
     return name;
 }
 
-static NameId emitSrtBindEntryName(const Entry *e, const char *roNamePrefix, const char *rwNamePrefix)
+static NameId emitSrtBindEntryName(const Entry *entryValue, const char *roNamePrefix, const char *rwNamePrefix)
 {
     NameId name;
-    sb_Str(&gScratch, (kAccessRO == e->access) ? roNamePrefix : rwNamePrefix);
-    sb_Str(&gScratch, nameToCStr(e->name));
-    if (kNameIdEmpty != e->asfx)
-    {
-        sb_StrLit(&gScratch, "_");
-        sb_Str(&gScratch, nameToCStr(e->asfx));
-    }
+    sb_Str(&gScratch, (kAccessRO == entryValue->bindAccess) ? roNamePrefix : rwNamePrefix);
+    sb_Str(&gScratch, nameToCStr(entryValue->bindName));
     name = cstrIntern(gScratch.data);
     sb_Reset(&gScratch);
     return name;
 }
 
-static void addBuf(uint16_t access, uint16_t kind, uint16_t glc, const char *hlslType, const char *dataType, const char *name, const char *aliasPostfix)
+/** Named groups may be declared at file or SRT scope; an in-SRT declaration also adds a use there. */
+static void groupBeginNamed(const char *name, uint16_t type)
 {
-    Entry       *e = NULL;
-    const NameId nameId = cstrIntern(name);
-
-    if (g_currentGroup >= 0)
+    if (groupIdIsValid(g_currentGroup))
     {
-        Group *g = &g_groups[g_currentGroup];
-        if (kAccessRO == access && g->uavCount > 0)
-        {
-            fail("bind group '%s': read-only entry '%s' declared after a read-write entry (a descriptor range requires all SRVs before all UAVs)", nameToCStr(g->name), name);
-        }
-        if (g->entryCount >= MAX_ENTRIES)
-        {
-            fail("bind group '%s': too many entries at '%s'", nameToCStr(g->name), name);
-            return;
-        }
-        e = &g->entries[g->entryCount++];
-        memset(e, 0, sizeof(Entry));
-        e->reg = (kAccessRO == access) ? g->srvCount++ : g->uavCount++;
-
-        /* a group entry names the resource directly */
-        registerResource(nameId);
-    }
-    else if (g_currentSrt >= 0)
-    {
-        /* a root descriptor is a slot -- the resource it points at is named by each pass */
-        Srt *srt = &g_srts[g_currentSrt];
-        int  i;
-        int  count = 0;
-
-        if (kKindTyped == kind)
-        {
-            fail("SRT '%s': typed buffer '%s' cannot be a root descriptor -- D3D12 allows only raw/byte buffers or structured buffers there, so put it in a bind group", nameToCStr(srt->name), name);
-        }
-        for (i = 0; i < srt->rootBufCount; ++i)
-        {
-            if ((kAccessRO == access) == (kAccessRO == srt->rootBufs[i].access))
-            {
-                count += 1;
-            }
-        }
-
-        if (srt->rootBufCount >= MAX_ENTRIES)
-        {
-            fail("SRT '%s': too many root descriptors at '%s'", nameToCStr(srt->name), name);
-            return;
-        }
-        e = &srt->rootBufs[srt->rootBufCount++];
-        memset(e, 0, sizeof(Entry));
-        e->reg = (uint16_t)count;
-    }
-    else
-    {
-        fail("buffer entry '%s' declared outside of a bind group or SRT", name);
+        fail("%s '%s' declared inside '%s' -- groups do not nest", kGroupTypeDesc[type], name, nameToCStr(group(g_currentGroup)->name));
         return;
     }
-
-    e->access = access;
-    e->kind = kind;
-    e->glc = glc;
-    e->name = nameId;
-    e->asfx = cstrIntern(aliasPostfix);
-    e->hlslType = cstrIntern(hlslType);
-    e->dataType = cstrIntern(dataType);
-
-    e->macroText = emitSrtBindEntryType(e);
-    e->memberText = emitSrtBindEntryName(e, "in", "inout");
-    e->globalText = emitSrtBindEntryName(e, "ZstdIn", "ZstdInOut");
+    g_currentGroup = groupIntern(cstrIntern(name), type);
+    if (g_currentSrt >= 0)
+    {
+        srtAppendGroup(&gSrts[g_currentSrt], g_currentGroup);
+    }
 }
 
-static void addConst(int kind, const char *type, const char *name)
+/** How many unnamed groups of `type` the SRT already has */
+static int srtUnnamedGroupCount(const Srt *srt, uint16_t type)
 {
-    Srt *srt;
+    int unnamedGroupCount = 0;
+
+    forEachGroupInRange(srtGroupRangePerType(srt, type), gid,
+    {
+        unnamedGroupCount += (0 != groupDataGet(gid)->unnamed);
+    });
+    return unnamedGroupCount;
+}
+
+static GroupId srtNewUnnamedGroup(uint16_t type)
+{
+    Srt    *srt;
+    GroupId id;
 
     if (g_currentSrt < 0)
     {
-        fail("constant '%s' declared outside of an SRT", name);
-        return;
+        fail("an unnamed %s must be declared inside an SRT", kGroupTypeDesc[type]);
+        return kInvalidGroup;
     }
-    srt = &g_srts[g_currentSrt];
-    if (srt->constCount >= MAX_CONSTS)
-    {
-        fail("SRT '%s': too many constants at '%s'", nameToCStr(srt->name), name);
-        return;
-    }
-    if (kConstIndirect == kind && srt->cpuConstCount > 0)
-    {
-        fail("SRT '%s': ZSTDGPU_SRT_CONST_INDIRECT('%s') must be declared before any ZSTDGPU_SRT_CONST - the command signature injects the leading constants", nameToCStr(srt->name), name);
-    }
-    srt->consts[srt->constCount].kind = kind;
-    srt->consts[srt->constCount].type = cstrIntern(type);
-    srt->consts[srt->constCount].name = cstrIntern(name);
-
-    /** split constants */
-    if (kConstInline == kind)
-    {
-        srt->inlineConsts[srt->inlineConstCount++] = srt->consts[srt->constCount];
-    }
-    else
-    {
-        srt->boundConsts[srt->boundConstCount++] = srt->consts[srt->constCount];
-        srt->cpuConstCount += (kConstCpu == kind);
-    }
-    srt->constCount += 1;
+    srt = &gSrts[g_currentSrt];
+    id = groupIntern(nameConcatIndex(srt->key, kGroupTypeSufx[type], srtUnnamedGroupCount(srt, type)), type);
+    groupDataGet(id)->unnamed = 1;
+    srtAppendGroup(srt, id);
+    return id;
 }
 
-static void passBegin(const char *kernel, const char *name, int dispatch)
+static GroupId srtImplicitGroup(uint16_t type)
 {
-    const NameId kernelId = cstrIntern(kernel);
-    int          i;
-    int          srtIdx = -1;
+    const Srt *srt;
 
-    for (i = 0; i < g_srtCount; ++i)
+    if (g_currentSrt < 0)
     {
-        if (g_srts[i].name == kernelId)
+        fail("an unnamed %s must be declared inside an SRT", kGroupTypeDesc[type]);
+        return kInvalidGroup;
+    }
+    srt = &gSrts[g_currentSrt];
+    if (srt->groupCount > 0)
+    {
+        const GroupId last = gGroupIds[srt->groupStart + srt->groupCount - 1];
+
+        if (type == groupDataGet(last)->type && 0 != groupDataGet(last)->unnamed)
         {
-            srtIdx = i;
-            break;
+            return last;
         }
+    }
+    return srtNewUnnamedGroup(type);
+}
+
+static void groupBeginUnnamed(uint16_t type)
+{
+    if (groupIdIsValid(g_currentGroup))
+    {
+        fail("an unnamed %s is declared inside '%s' -- groups do not nest", kGroupTypeDesc[type], nameToCStr(group(g_currentGroup)->name));
+        return;
+    }
+    g_currentGroup = srtNewUnnamedGroup(type);
+}
+
+static const char *dxgiFormatForCpuType(const char *elementType)
+{
+    static const char *const kMap[][2] = {
+        {  "uint8_t",   "DXGI_FORMAT_R8_UINT" },
+        { "uint16_t",  "DXGI_FORMAT_R16_UINT" },
+        { "uint32_t",  "DXGI_FORMAT_R32_UINT" },
+        {  "int16_t",  "DXGI_FORMAT_R16_SINT" },
+        {  "int32_t",  "DXGI_FORMAT_R32_SINT" },
+        {    "float", "DXGI_FORMAT_R32_FLOAT" }
+    };
+    int i;
+
+    for (i = 0; i < (int)(sizeof(kMap) / sizeof(kMap[0])); ++i)
+    {
+        if (0 == strcmp(elementType, kMap[i][0]))
+        {
+            return kMap[i][1];
+        }
+    }
+    return NULL;
+}
+
+static void addBuf(uint16_t access, uint16_t kind, uint16_t glc, const char *hlslType, const char *dataType, const char *name, const char *aliasPostfix)
+{
+    GroupId target = g_currentGroup;
+
+    if (!groupIdIsValid(target))
+    {
+        /* Do not leave an implicit root group open: following constants need their own group. */
+        target = srtImplicitGroup(kGroupRoot);
+        if (!groupIdIsValid(target))
+        {
+            return;
+        }
+    }
+
+    if (groupTypeIsConst(groupDataGet(target)->type))
+    {
+        fail("constant group '%s': buffer entry '%s' cannot be declared in it", nameToCStr(group(target)->name), name);
+        return;
+    }
+    if (kGroupIndirect == groupDataGet(target)->type)
+    {
+        fail("indirect buffer group '%s': buffer '%s' must use ZSTDGPU_SRT_BUF_INDIRECT", nameToCStr(group(target)->name), name);
+        return;
+    }
+    if (kKindTyped == kind && kGroupHeap != groupDataGet(target)->type)
+    {
+        fail("'%s': typed buffer '%s' cannot be a root descriptor -- D3D12 allows only raw/byte buffers or structured buffers there, so put it in a bind group", nameToCStr(group(target)->name), name);
+    }
+    if (kKindTyped == kind && NULL == dxgiFormatForCpuType(dataType))
+    {
+        fail("typed buffer '%s': no DXGI format mapping for element type '%s' -- add it to dxgiFormatForCpuType", name, dataType);
+    }
+
+    groupAppendEntry(target, entryIntern(access, kind, glc, hlslType, dataType, name, aliasPostfix));
+}
+
+static void addConst(uint16_t groupType, const char *type, const char *name)
+{
+    if (groupIdIsValid(g_currentGroup))
+    {
+        if (groupType != groupDataGet(g_currentGroup)->type)
+        {
+            fail("%s '%s': constant '%s' cannot be declared in it -- it belongs in a %s", kGroupTypeDesc[groupDataGet(g_currentGroup)->type], nameToCStr(group(g_currentGroup)->name), name, kGroupTypeDesc[groupType]);
+            return;
+        }
+        groupAppendConst(g_currentGroup, constIntern(type, name));
+        return;
+    }
+    if (g_currentSrt < 0)
+    {
+        fail("constant '%s' declared outside of an SRT or a constant group", name);
+        return;
+    }
+    groupAppendConst(srtImplicitGroup(groupType), constIntern(type, name));
+}
+
+static Pass *passNew(int srtIdx, NameId name, int stage, int indirect)
+{
+    Pass     pass;
+    uint16_t type;
+
+    if (passCount() >= kPassNone)
+    {
+        fail("more than %u passes -- widen SrtSlotData::statedBy so no pass index reaches kPassNone", (unsigned)kPassNone);
+        return NULL;
+    }
+
+    memset(&pass, 0, sizeof(Pass));
+    pass.srtIdx = srtIdx;
+    pass.name = name;
+    pass.indirect = indirect;
+    pass.stage = stage;
+    pass.binderName = gSrts[srtIdx].passOverrides ? nameConcatWithUnderscore(gSrts[srtIdx].key, name) : gSrts[srtIdx].key;
+
+    for (type = 0; type < kGroupBindKindCount; ++type)
+    {
+        pass.perTypeGroupStart[type] = gSrts[srtIdx].perTypeGroupStart[type];
+        pass.perTypeGroupCount[type] = gSrts[srtIdx].perTypeGroupCount[type];
+    }
+    arrput(gPasses, pass);
+    Srt *srt = &gSrts[srtIdx];
+    if (!srt->hasPass || stage < srt->earliestPassStage)
+    {
+        srt->earliestPassStage = (uint16_t)stage;
+    }
+    srt->hasPass = 1;
+    srt->hasIndirectPass |= (Indirect == indirect);
+    return &gPasses[passCount() - 1];
+}
+
+static void passBegin(const char *kernel, const char *name, int stage, int dispatch)
+{
+    const NameId    kernelId = cstrIntern(kernel);
+    const ptrdiff_t srtIdx = hmgeti(gSrts, kernelId);
+
+    if (g_currentSrt >= 0)
+    {
+        fail("pass '%s' of SRT '%s' must be declared after ZSTDGPU_SRT_END()", name, kernel);
+        return;
     }
     if (srtIdx < 0)
     {
         fail("pass '%s' references undefined SRT '%s'", name, kernel);
         return;
     }
-    if (g_passCount >= MAX_PASSES)
+    if (stage < 0 || stage >= STAGE_COUNT)
     {
-        fail("too many passes at '%s'", name);
+        fail("pass '%s' of SRT '%s' names stage %d, which is outside 0..%d", name, kernel, stage, STAGE_COUNT - 1);
         return;
     }
-    g_currentPass = g_passCount++;
-    memset(&g_passes[g_currentPass], 0, sizeof(Pass));
-    g_passes[g_currentPass].name = cstrIntern(name);
-    g_passes[g_currentPass].srtIdx = srtIdx;
-    g_passes[g_currentPass].indirect = checkDispatch("pass", name, dispatch);
+    dispatch = checkPassDispatch(name, dispatch);
+    if (Indirect == dispatch && Direct == gSrts[srtIdx].indirect)
+    {
+        fail("pass '%s' of SRT '%s' dispatches Indirect but its SRT is Direct", name, kernel);
+        return;
+    }
+    gSrts[srtIdx].passOverrides = 1;
+    passNew((int)srtIdx, cstrIntern(name), stage, dispatch);
+    g_currentPass = (int)passCount() - 1;
 }
 
 static void passEnd(void)
 {
-    if (g_currentPass >= 0)
-    {
-        Pass *pass = &g_passes[g_currentPass];
-        Srt  *srt = &g_srts[pass->srtIdx];
-        int   i;
-
-        for (i = 0; i < srt->rootBufCount; ++i)
-        {
-            if (kNameIdError == pass->resources[i])
-            {
-                fail("pass '%s' does not bind '%s' of '%s'", nameToCStr(pass->name), nameToCStr(srt->rootBufs[i].name), nameToCStr(srt->name));
-            }
-        }
-    }
     g_currentPass = -1;
 }
 
-static void passBind(const char *slot, const char *resource)
+#define kAccessKeep 0xffffu
+
+static void groupCloneAdd(GroupId id, GroupId base, NameId clonedPassName)
 {
-    Pass  *pass;
-    Srt   *srt;
-    NameId slotId;
-    NameId resourceId;
-    int    i;
+    uint16_t i;
+
+    groupsAdd(groupDataGet(base)->type, base);
+    groupDataGet(id)->unnamed     = groupDataGet(base)->unnamed;
+    groupDataGet(id)->cloneSuffix = clonedPassName;
+    for (i = 0; i < groupDataGet(base)->entryCount; ++i)
+    {
+        groupAppendEntry(id, gEntryIds[groupDataGet(base)->entryStart + i]);
+    }
+}
+
+static GroupId passOwnGroup(Pass *pass, GroupId base)
+{
+    Group key;
+
+    if (group(base)->pass == pass->binderName)
+    {
+        return base;
+    }
+    assert(!groupIsClone(base) && "a pass's list holds either its own clone or the template");
+
+    memset(&key, 0, sizeof(key));
+    key.name = group(base)->name;
+    key.pass = pass->binderName;
+
+    INTERN_BY_VALUE_AND_RETURN(gGroups, GroupKey, key, GroupId, groupCloneAdd(id_, base, pass->name), (void)0);
+}
+
+static GroupId passOwnGroupAt(Pass *pass, uint16_t type, uint16_t typedGroupIdx)
+{
+    const uint16_t count = pass->perTypeGroupCount[type];
+    uint16_t       start = pass->perTypeGroupStart[type];
+
+    assert(type < kGroupBindKindCount && "a pass keeps ranges only for the bind kinds");
+    assert(typedGroupIdx < count && "position is not in this pass's range");
+
+    if (start == gSrts[pass->srtIdx].perTypeGroupStart[type])
+    {
+        if (arrlenu(gGroupIdsByType[type]) + count >= UINT16_MAX)
+        {
+            fail("more than %d group uses -- widen Pass::perTypeGroupStart", (int)UINT16_MAX);
+            return gGroupIdsByType[type][start + typedGroupIdx];
+        }
+        else
+        {
+            uint16_t srcStart = start;
+            uint16_t dstStart = (uint16_t)arraddnindex(gGroupIdsByType[type], count);
+
+            memcpy(gGroupIdsByType[type] + dstStart, gGroupIdsByType[type] + srcStart, (size_t)count * sizeof(GroupId));
+
+            pass->perTypeGroupStart[type] = start = dstStart;
+        }
+    }
+    {
+        const GroupId owned = passOwnGroup(pass, gGroupIdsByType[type][start + typedGroupIdx]);
+
+        gGroupIdsByType[type][start + typedGroupIdx] = owned;
+        return owned;
+    }
+}
+
+static GroupId passCloneOf(const Pass *pass, GroupId baseGid)
+{
+    forEachGroupInRange(passGroupRangePerType(pass, groupDataGet(baseGid)->type), gid,
+    {
+        if (groupBase(gid).id == baseGid.id)
+        {
+            return gid;
+        }
+    });
+    return kInvalidGroup;
+}
+
+static GroupId srtSharedTable(int srtIdx, GroupId baseGid)
+{
+    GroupId found = kInvalidGroup;
+
+    for (size_t i = 0; i < passCount(); ++i)
+    {
+        GroupId clone;
+
+        if (gPasses[i].srtIdx != srtIdx)
+        {
+            continue;
+        }
+        clone = passCloneOf(&gPasses[i], baseGid);
+        if (!groupIdIsValid(clone))
+        {
+            continue;
+        }
+        if (!groupIdIsValid(found))
+        {
+            found = groupTableOwner(clone);
+        }
+        else if (found.id != groupTableOwner(clone).id)
+        {
+            return kInvalidGroup;
+        }
+    }
+    return found;
+}
+
+static void passBindSlot(const char *macro, uint16_t slotBindGroup, const char *slot, const char *resource, uint16_t slotAccess)
+{
+    Pass      *pass;
+    NameId     slotId;
+    NameId     resourceId;
+    uint16_t   access;
+    uint16_t   bindGroup;
+    ptrdiff_t  found;
 
     if (g_currentPass < 0)
     {
-        fail("ZSTDGPU_SRT_BIND(%s) outside of a pass", slot);
+        fail("%s(%s) outside of a pass", macro, slot);
         return;
     }
-    pass = &g_passes[g_currentPass];
-    srt = &g_srts[pass->srtIdx];
+    pass = &gPasses[g_currentPass];
     slotId = cstrIntern(slot);
-    resourceId = cstrIntern(resource);
+    resourceId = (NULL == resource) ? slotId : cstrIntern(resource);
 
-    for (i = 0; i < srt->rootBufCount; ++i)
+    bindGroup = kSlotNotDeclared;
+    access = kAccessNone;
+
     {
-        if (srt->rootBufs[i].name == slotId)
+        const SrtSlot key = { slotId, (uint16_t)pass->srtIdx };
+
+        found = hmgeti(gSrtSlots, key);
+    }
+    if (found >= 0)
+    {
+        access = gSrtSlots[found].access;
+        bindGroup = gSrtSlots[found].groupType;
+    }
+    /* Recognise ExecuteIndirect buffers to diagnose attempts to override their mandatory access. */
+    if (kSlotNotDeclared == bindGroup && Indirect == pass->indirect)
+    {
+        forEachGroupEntry(srtGroupRangePerType(&gSrts[pass->srtIdx], kGroupIndirect), indirectGid, j,
         {
-            srt->rootBufs[i].mod = 1;
-            break;
+            if (entry->bindName == slotId)
+            {
+                access = kAccessIndirect;
+                bindGroup = kGroupIndirect;
+                break;
+            }
+        });
+    }
+
+    if (bindGroup != slotBindGroup)
+    {
+        switch (bindGroup)
+        {
+        case kGroupRoot:
+            fail("%s(%s): '%s' is a root descriptor of SRT '%s' -- use ZSTDGPU_SRT_ROOT_BIND%s", macro, slot, slot, nameToCStr(gSrts[pass->srtIdx].key), macro + sizeof("ZSTDGPU_SRT_HEAP_BIND") - 1);
+            return;
+        case kGroupHeap:
+            fail("%s(%s): '%s' is a bind group entry, not a root descriptor -- use ZSTDGPU_SRT_HEAP_BIND%s", macro, slot, slot, macro + sizeof("ZSTDGPU_SRT_ROOT_BIND") - 1);
+            return;
+        case kGroupIndirect:
+            fail("%s(%s): ExecuteIndirect reads '%s' whatever the shader does, so neither what it binds nor its access is the shader's to change", macro, slot, slot);
+            return;
+        default:
+            fail("%s(%s): SRT '%s' does not declare '%s'", macro, slot, nameToCStr(gSrts[pass->srtIdx].key), slot);
+            return;
         }
     }
-    if (i == srt->rootBufCount)
+    if (kAccessRNW == slotAccess && kAccessRW != access)
     {
-        fail("pass '%s' binds '%s' which is not a root descriptor of its SRT (bind group entries are bound by the descriptor table, not per pass)", nameToCStr(pass->name), slot);
+        fail("%s(%s): SRT '%s' does not declare '%s' as RW, so there is no write to drop", macro, slot, nameToCStr(gSrts[pass->srtIdx].key), slot);
         return;
     }
-    if (kNameIdError != pass->resources[i])
+    assert(found >= 0 && "kind matched wantKind, so the SRT index holds this slot");
+    if ((uint16_t)g_currentPass == gSrtSlots[found].statedBy)
     {
-        fail("pass '%s' binds '%s' more than once", nameToCStr(pass->name), slot);
+        fail("%s(%s): pass '%s' already states what it does with '%s' -- one statement per slot, so say the resource and the access together with a _BY_NAME_NA or _BY_NAME_RNW form",
+             macro, slot, nameToCStr(pass->name), slot);
         return;
     }
-    pass->resources[i] = resourceId;
+    gSrtSlots[found].statedBy = (uint16_t)g_currentPass;
 
-    registerResource(resourceId);
+    if (kAccessKeep != slotAccess || resourceId != slotId)
+    {
+        const uint16_t type          = bindGroup;
+        const uint16_t typedGroupIdx = gSrtSlots[found].typedGroupIdx;
+        const uint16_t groupEntryIdx = gSrtSlots[found].groupEntryIdx;
+        const GroupId  gid           = passOwnGroupAt(pass, type, typedGroupIdx);
+        Entry          entryValue;
+        EntryId        entryId;
+
+        entryValue = gEntries[gEntryIds[groupDataGet(gid)->entryStart + groupEntryIdx].id].key;
+        assert(entryValue.bindName == slotId && "the pass's groups no longer sit where the SRT's do");
+
+        if (resourceId != slotId && resourceId != entryValue.resName)
+        {
+            gSrts[pass->srtIdx].hasResourceRebindings = 1;
+            entryValue.resName = resourceId;
+        }
+        if (kAccessKeep != slotAccess && !(kAccessRNW == slotAccess && kAccessRW != entryValue.realAccess))
+        {
+            entryValue.realAccess = slotAccess;
+        }
+        entryId = entryInternValue(&entryValue);
+
+        gEntryIds[groupDataGet(gid)->entryStart + groupEntryIdx] = entryId;
+    }
 }
 
-/**
- *  Declaration expansion macros
- */
-#define ZSTDGPU_SRT_BIND_GROUP_BEGIN(name, stages)            groupBegin(#name, (stages));
-#define ZSTDGPU_SRT_BIND_GROUP_END()                          groupEnd();
+static void addIndirectBuf(const char *name)
+{
+    if (!groupIdIsValid(g_currentGroup) || kGroupIndirect != groupDataGet(g_currentGroup)->type)
+    {
+        fail("indirect buffer '%s' must be declared inside an indirect bind group", name);
+        return;
+    }
+    groupAppendEntry(g_currentGroup, entryIntern(kAccessIndirect, kKindStruct, 0, "uint32_t", "uint32_t", name, ""));
+}
 
-#define ZSTDGPU_SRT_BEGIN(name, disp)                         srtBegin(#name, (disp));
+#define ZSTDGPU_SRT_HEAP_BIND_GROUP_NAMED_BEGIN(name)         groupBeginNamed(#name, kGroupHeap);
+#define ZSTDGPU_SRT_HEAP_BIND_GROUP_BEGIN()                   groupBeginUnnamed(kGroupHeap);
+#define ZSTDGPU_SRT_HEAP_BIND_GROUP_END()                     groupEnd();
+
+#define ZSTDGPU_SRT_ROOT_BIND_GROUP_NAMED_BEGIN(name)         groupBeginNamed(#name, kGroupRoot);
+#define ZSTDGPU_SRT_ROOT_BIND_GROUP_BEGIN()                   groupBeginUnnamed(kGroupRoot);
+#define ZSTDGPU_SRT_ROOT_BIND_GROUP_END()                     groupEnd();
+
+#define ZSTDGPU_SRT_CONST_GROUP_NAMED_BEGIN(name)             groupBeginNamed(#name, kGroupConst);
+#define ZSTDGPU_SRT_CONST_GROUP_BEGIN()                       groupBeginUnnamed(kGroupConst);
+#define ZSTDGPU_SRT_CONST_GROUP_END()                         groupEnd();
+
+#define ZSTDGPU_SRT_CONST_INDIRECT_GROUP_NAMED_BEGIN(name)    groupBeginNamed(#name, kGroupConstIndirect);
+#define ZSTDGPU_SRT_CONST_INDIRECT_GROUP_BEGIN()              groupBeginUnnamed(kGroupConstIndirect);
+#define ZSTDGPU_SRT_CONST_INDIRECT_GROUP_END()                groupEnd();
+
+#define ZSTDGPU_SRT_BEGIN(name, stage)                        srtBegin(#name, (stage));
 #define ZSTDGPU_SRT_END()                                     srtEnd();
 #define ZSTDGPU_SRT_USE_BIND_GROUP(name)                      srtUseGroup(#name);
 
-#define ZSTDGPU_SRT_PASS_BEGIN(srt, pass, disp)               passBegin(#srt, #pass, (disp));
+#define ZSTDGPU_SRT_PASS_BEGIN(srt, pass, stage, disp)        passBegin(#srt, #pass, (stage), (disp));
 #define ZSTDGPU_SRT_PASS_END()                                passEnd();
+
+#define ZSTDGPU_SRT_PASS(srt, pass, stage, disp)              passBegin(#srt, #pass, (stage), (disp)); passEnd();
+
+#define ZSTDGPU_SRT_ROOT_BIND(slot)                           passBindSlot("ZSTDGPU_SRT_ROOT_BIND", kGroupRoot, #slot, NULL, kAccessKeep);
+#define ZSTDGPU_SRT_ROOT_BIND_NA(slot)                        passBindSlot("ZSTDGPU_SRT_ROOT_BIND_NA", kGroupRoot, #slot, NULL, kAccessNone);
+#define ZSTDGPU_SRT_ROOT_BIND_RNW(slot)                       passBindSlot("ZSTDGPU_SRT_ROOT_BIND_RNW", kGroupRoot, #slot, NULL, kAccessRNW);
+
+#define ZSTDGPU_SRT_ROOT_BIND_BY_NAME(slot, name)             passBindSlot("ZSTDGPU_SRT_ROOT_BIND_BY_NAME", kGroupRoot, #slot, #name, kAccessKeep);
+#define ZSTDGPU_SRT_ROOT_BIND_BY_NAME_NA(slot, name)          passBindSlot("ZSTDGPU_SRT_ROOT_BIND_BY_NAME_NA", kGroupRoot, #slot, #name, kAccessNone);
+#define ZSTDGPU_SRT_ROOT_BIND_BY_NAME_RNW(slot, name)         passBindSlot("ZSTDGPU_SRT_ROOT_BIND_BY_NAME_RNW", kGroupRoot, #slot, #name, kAccessRNW);
+
+#define ZSTDGPU_SRT_HEAP_BIND_NA(slot)                        passBindSlot("ZSTDGPU_SRT_HEAP_BIND_NA", kGroupHeap, #slot, NULL, kAccessNone);
+#define ZSTDGPU_SRT_HEAP_BIND_RNW(slot)                       passBindSlot("ZSTDGPU_SRT_HEAP_BIND_RNW", kGroupHeap, #slot, NULL, kAccessRNW);
+
+/** Rebind a heap slot in the pass's private group. */
+#define ZSTDGPU_SRT_HEAP_BIND_BY_NAME(slot, name)             passBindSlot("ZSTDGPU_SRT_HEAP_BIND_BY_NAME", kGroupHeap, #slot, #name, kAccessKeep);
+#define ZSTDGPU_SRT_HEAP_BIND_BY_NAME_NA(slot, name)          passBindSlot("ZSTDGPU_SRT_HEAP_BIND_BY_NAME_NA", kGroupHeap, #slot, #name, kAccessNone);
+#define ZSTDGPU_SRT_HEAP_BIND_BY_NAME_RNW(slot, name)         passBindSlot("ZSTDGPU_SRT_HEAP_BIND_BY_NAME_RNW", kGroupHeap, #slot, #name, kAccessRNW);
 
 #define ZSTDGPU_SRT_BUF_RO_STRUCT(type, name)                 addBuf(kAccessRO, kKindStruct, 0, #type, #type, #name, "");
 #define ZSTDGPU_SRT_BUF_RNW_STRUCT(type, name)                addBuf(kAccessRNW, kKindStruct, 0, #type, #type, #name, "");
@@ -784,653 +1812,823 @@ static void passBind(const char *slot, const char *resource)
 #define ZSTDGPU_SRT_BUF_RO_STRUCT_ALIAS(type, name, postfix)  addBuf(kAccessRO, kKindStruct, 0, #type, #type, #name, #postfix);
 #define ZSTDGPU_SRT_BUF_RW_STRUCT_ALIAS(type, name, postfix)  addBuf(kAccessRW, kKindStruct, 0, #type, #type, #name, #postfix);
 
-#define ZSTDGPU_SRT_CONST(type, name)                         addConst(kConstCpu, #type, #name);
-#define ZSTDGPU_SRT_CONST_INDIRECT(type, name)                addConst(kConstIndirect, #type, #name);
-#define ZSTDGPU_SRT_CONST_INLINE(type, name)                  addConst(kConstInline, #type, #name);
+#define ZSTDGPU_SRT_CONST(type, name)                         addConst(kGroupConst, #type, #name);
+#define ZSTDGPU_SRT_CONST_INDIRECT(type, name)                addConst(kGroupConstIndirect, #type, #name);
+#define ZSTDGPU_SRT_CONST_INLINE(type, name)                  addConst(kGroupConstInline, #type, #name);
 
-#define ZSTDGPU_SRT_BIND(slot, resource)                      passBind(#slot, #resource);
+#define ZSTDGPU_SRT_INDIRECT_BIND_GROUP_NAMED_BEGIN(name)     groupBeginNamed(#name, kGroupIndirect);
+#define ZSTDGPU_SRT_INDIRECT_BIND_GROUP_BEGIN()               groupBeginUnnamed(kGroupIndirect);
+#define ZSTDGPU_SRT_INDIRECT_BIND_GROUP_END()                 groupEnd();
+#define ZSTDGPU_SRT_BUF_INDIRECT(name)                        addIndirectBuf(#name);
+
+#ifndef ZSTDGPU_SRT_DECL_PATH
+#define ZSTDGPU_SRT_DECL_PATH zstdgpu_srt_decl.h
+#endif
+#define ZSTDGPU_STRINGIFY_(tokens) #tokens
+#define ZSTDGPU_STRINGIFY(tokens)  ZSTDGPU_STRINGIFY_(tokens)
 
 static void collect(void)
 {
-#include "zstdgpu_srt_decl.h"
-}
-
-static int passMatchesDefault(const Pass *pass, const Srt *srt)
-{
-    int i;
-
-    if (pass->indirect != srt->indirect)
-        return 0;
-    for (i = 0; i < srt->rootBufCount; ++i)
+#include ZSTDGPU_STRINGIFY(ZSTDGPU_SRT_DECL_PATH)
+    if (g_currentSrt >= 0)
     {
-        if (pass->resources[i] != srt->rootBufs[i].name)
-            return 0;
+        fail("SRT '%s' is missing ZSTDGPU_SRT_END()", nameToCStr(gSrts[g_currentSrt].key));
+        srtEnd();
     }
-    return 1;
 }
 
+/** After explicit pass declarations, add default ones one pass only where `passOverrides` is clear */
 static void addDefaultPasses(void)
 {
-    int s;
-    int i;
-
-    for (s = 0; s < g_srtCount; ++s)
+    for (size_t s = 0; s < srtCount(); ++s)
     {
-        Srt *srt = &g_srts[s];
-        int  explicitCount = 0;
+        Srt *srt = &gSrts[s];
 
-        for (i = 0; i < g_passCount; ++i)
+        if (0 == srt->passOverrides)
         {
-            if (g_passes[i].srtIdx != s)
-                continue;
-
-            explicitCount += 1;
-            if (passMatchesDefault(&g_passes[i], srt))
-            {
-                warn("SRT '%s': pass '%s' is identical to the implicit default pass. Remove it.", nameToCStr(srt->name), nameToCStr(g_passes[i].name));
-            }
+            passNew((int)s, cstrIntern("Default"), srt->declStage, srt->indirect);
         }
+    }
+}
 
-        if (explicitCount > 0)
+static void deriveGroupUsage(void)
+{
+    for (size_t p = 0; p < passCount(); ++p)
+    {
+        const Pass *pass = &gPasses[p];
+
+        forEachGroupInRange(passGroupRangePerType(pass, kGroupHeap), gid,
+        {
+            groupDataGet(gid)->stageMask |= (uint32_t)(1u << pass->stage);
+        });
+    }
+}
+
+static void checkSrtStages(void)
+{
+    for (size_t s = 0; s < srtCount(); ++s)
+    {
+        const Srt *srt = &gSrts[s];
+        if (srt->hasPass && srt->earliestPassStage != srt->declStage)
+        {
+            fail("SRT '%s' is declared in stage %d, but its earliest pass runs in stage %d", nameToCStr(srt->key), (int)srt->declStage, (int)srt->earliestPassStage);
+        }
+    }
+}
+
+static void registerBoundResources(void)
+{
+    for (size_t i = 0; i < passCount(); ++i)
+    {
+        uint16_t type;
+
+        for (type = 0; type < kGroupBindKindCount; ++type)
+        {
+            forEachGroupEntry(passGroupRangePerType(&gPasses[i], type), gid, j,
+            {
+                registerResource(entry->resName);
+            });
+        }
+    }
+}
+
+static int srtIndirectConstsRootSlot(const Srt *srt)
+{
+    const GroupRange groups = srtGroupRangePerType(srt, kGroupConstIndirect);
+    return srtGroupRootParam(srt, groups.count > 0 ? groups.ids[0] : kInvalidGroup);
+}
+
+static void checkIndirectInputs(void)
+{
+    for (size_t s = 0; s < srtCount(); ++s)
+    {
+        const Srt *srt = &gSrts[s];
+        const GroupRange buffers = srtGroupRangePerType(srt, kGroupIndirect);
+
+        if (Direct == srt->indirect)
+        {
             continue;
-
-        if (g_passCount >= MAX_PASSES)
-        {
-            fail("too many passes at default for '%s'", nameToCStr(srt->name));
-            return;
         }
-
+        if (!srt->hasIndirectPass)
         {
-            Pass *pass = &g_passes[g_passCount++];
-            memset(pass, 0, sizeof(Pass));
-            pass->name = kNameIdError; /* unnamed -- the binder carries no pass suffix */
-            pass->srtIdx = s;
-            pass->indirect = srt->indirect;
-            for (i = 0; i < srt->rootBufCount; ++i)
+            warn("SRT '%s' is Indirect but all its passes are Direct", nameToCStr(srt->key));
+        }
+        if (0 == srtGroupEntryCount(srt, kGroupConstIndirect))
+        {
+            fail("SRT '%s' dispatches Indirect but declares no ZSTDGPU_SRT_CONST_INDIRECT -- the command signature has nothing to inject", nameToCStr(srt->key));
+        }
+        else if (srtGroupRangePerType(srt, kGroupConstIndirect).count != 1)
+        {
+            fail("SRT '%s' dispatches Indirect but spreads its constants over %u ZSTDGPU_SRT_CONST_INDIRECT group(s) -- exactly one is required: the command signature injects one root constants block", nameToCStr(srt->key), (unsigned)srtGroupRangePerType(srt, kGroupConstIndirect).count);
+        }
+        if (buffers.count != 1)
+        {
+            fail("SRT '%s' dispatches Indirect but uses %u indirect buffer group(s) -- exactly one is required", nameToCStr(srt->key), (unsigned)buffers.count);
+            continue;
+        }
+        {
+            const GroupId gid = buffers.ids[0];
+
+            if (2 != groupDataGet(gid)->entryCount)
             {
-                pass->resources[i] = srt->rootBufs[i].name;
-                registerResource(srt->rootBufs[i].name);
+                fail("indirect buffer group '%s' holds %d buffer(s) -- declare exactly 2: argument buffer then count buffer", nameToCStr(group(gid)->name), (int)groupDataGet(gid)->entryCount);
+                continue;
+            }
+            forEachEntryInGroup(gid, i,
+            {
+                registerResource(entry->resName);
+            });
+            if (groupEntry(gid, 0)->resName == groupEntry(gid, 1)->resName)
+            {
+                fail("indirect buffer group '%s' names '%s' as both the argument buffer and the count buffer -- declare two distinct resources", nameToCStr(group(gid)->name), nameToCStr(groupEntry(gid, 0)->resName));
             }
         }
     }
 }
 
-static int srtConstsRootSlot(const Srt *srt)
+/** Reserve at least one separating space, then round each column width up to four columns. */
+static void alignGroupTextLens(void)
 {
-    return srt->groupCount + srt->rootBufCount;
+    forEachGroup(gid,
+    {
+        groupData->maxMacroLen = (uint16_t)((groupData->maxMacroLen + 3 + 1) & ~3u);
+        groupData->maxMemberLen = (uint16_t)((groupData->maxMemberLen + 3 + 1) & ~3u);
+        groupData->maxGlobalLen = (uint16_t)((groupData->maxGlobalLen + 3 + 1) & ~3u);
+    });
+}
+
+static void assignGroupSpaces(void)
+{
+    uint16_t next = 1;
+    forEachGroup(gid,
+    {
+        /* Templates are interned first, so a clone inherits an already-assigned register space. */
+        if (groupIsClone(gid))
+        {
+            groupData->space = groupDataGet(groupBase(gid))->space;
+            continue;
+        }
+        if (kGroupIndirect != groupType)
+        {
+            groupData->space = next++;
+        }
+    });
 }
 
 static void checkRootBudget(void)
 {
-    int s;
-    for (s = 0; s < g_srtCount; ++s)
+    for (size_t s = 0; s < srtCount(); ++s)
     {
-        const Srt *srt = &g_srts[s];
-        const int  rootDwords = srt->groupCount * 1 + srt->rootBufCount * 2 + srt->boundConstCount;
+        const Srt *srt = &gSrts[s];
+        const int  rootDwords = (int)srtGroupRangePerType(srt, kGroupHeap).count * 1
+                              + srtGroupEntryCount(srt, kGroupRoot) * 2
+                              + srtGroupEntryCount(srt, kGroupConstIndirect)
+                              + srtGroupEntryCount(srt, kGroupConst);
 
         if (rootDwords > MAX_ROOT_DWORDS)
         {
-            fail("SRT '%s': root signature costs %d (limit %d) DWORDs", nameToCStr(srt->name), rootDwords, MAX_ROOT_DWORDS);
+            fail("SRT '%s': root signature costs %d (limit %d) DWORDs", nameToCStr(srt->key), rootDwords, MAX_ROOT_DWORDS);
         }
     }
 }
 
-/**
- *  Code generation
- */
-#define calculateEntriesMaxLen(sz, name, e, c) for (uint32_t j = 0, nlen = 0; j<(uint32_t)c; nlen = (uint32_t)nameToCStrLen(e[j].name), sz = sz> nlen ? sz : nlen, ++j)
-
-static void emitHLSLBindPointNamesWithRegisters(StrBuilder *b, const Entry *e, int c, int space)
+static void emitHLSLBindPointNamesWithRegisters(StrBuilder *builder, GroupId gi, int space)
 {
-    uint32_t macroTextLen = 0, globalTextLen = 0;
+    const GroupData *groupData = groupDataGet(gi);
+    const uint16_t   entryCount = groupData->entryCount;
+    uint32_t         macroTextLen = groupData->maxMacroLen;
+    uint32_t         globalTextLen = groupData->maxGlobalLen;
 
-    calculateEntriesMaxLen(macroTextLen, macroText, e, c);
-    calculateEntriesMaxLen(globalTextLen, globalText, e, c);
-
-    macroTextLen = (macroTextLen + 3 + 1) & ~3;
-    globalTextLen = (globalTextLen + 3 + 1) & ~3;
-
-    for (int i = 0; i < c; ++i)
+    forEachEntryInGroup(gi, i,
     {
-        sb_Fmt(b, "%-*s%-*s: register(%s%u", macroTextLen, nameToCStr(e[i].macroText), globalTextLen, nameToCStr(e[i].globalText), (kAccessRO == e[i].access) ? "t" : "u", e[i].reg);
+        sb_Fmt(builder, "%-*s%-*s: register(%s%u", macroTextLen, nameToCStr(entryText->macroText), globalTextLen, nameToCStr(entryText->globalText), (kAccessRO == entry->bindAccess) ? "t" : "u", groupEntryReg(gi, i));
         if (space > 0)
-            sb_Fmt(b, ", space%d", space);
-        sb_StrLitEoL(b, ");");
-    }
+            sb_Fmt(builder, ", space%d", space);
+        sb_StrLitEoL(builder, ");");
+    });
 
-    if (c > 0)
-        sb_ExtraLine(b);
+    if (entryCount > 0)
+        sb_ExtraLine(builder);
 }
 
-static void emitHLSLResourceAssignment(StrBuilder *b, const Entry *e, int c, const char *structName)
+static void emitHLSLRootBindPointNamesWithRegisters(StrBuilder *builder, const Srt *srt)
 {
-    uint32_t memberTextLen = 0;
-    calculateEntriesMaxLen(memberTextLen, memberText, e, c);
-    memberTextLen = (memberTextLen + 3 + 1) & ~3;
+    const uint32_t macroTextLen = srtKindMaxLen(srt, kGroupRoot, kTextMacro);
+    const uint32_t globalTextLen = srtKindMaxLen(srt, kGroupRoot, kTextGlobal);
 
-    if (NULL == structName)
+    forEachGroupEntry(srtGroupRangePerType(srt, kGroupRoot), gid, idx,
     {
-        for (int i = 0; i < c; ++i)
-            sb_Fmt(b, "    srt.%-*s= %s;\n", memberTextLen, nameToCStr(e[i].memberText), nameToCStr(e[i].globalText));
-    }
-    else
-    {
-        for (int i = 0; i < c; ++i)
-            sb_Fmt(b, "    srt.%-*s= %s.%s;\n", memberTextLen, nameToCStr(e[i].memberText), structName, nameToCStr(e[i].name));
-    }
+        const int space = (int)groupDataGet(gid)->space;
+
+        sb_Fmt(builder, "%-*s%-*s: register(%s%u", macroTextLen, nameToCStr(entryText->macroText), globalTextLen, nameToCStr(entryText->globalText), (kAccessRO == entry->bindAccess) ? "t" : "u", groupEntryReg(gid, idx));
+        if (space > 0)
+            sb_Fmt(builder, ", space%d", space);
+        sb_StrLitEoL(builder, ");");
+    });
+
+    if (srtGroupEntryCount(srt, kGroupRoot) > 0)
+        sb_ExtraLine(builder);
 }
 
-static void emitBindGroupHeader(const char *dir, const Group *g)
+static void emitFillFromGlobals(StrBuilder *builder, GroupId gi)
+{
+    const uint32_t memberTextLen = groupDataGet(gi)->maxMemberLen;
+
+    forEachEntryInGroup(gi, i,
+    {
+        sb_Fmt(builder, "    srt.%-*s= %s;\n", memberTextLen, nameToCStr(entryText->memberText), nameToCStr(entryText->globalText));
+    });
+}
+
+static void emitFillFromResources(StrBuilder *builder, GroupId gi)
+{
+    const uint32_t memberTextLen = groupDataGet(gi)->maxMemberLen;
+
+    forEachEntryInGroup(gi, i,
+    {
+        sb_Fmt(builder, "    srt.%-*s= cpuRes.%s;\n", memberTextLen, nameToCStr(entryText->memberText), nameToCStr(entry->resName));
+    });
+}
+
+static void emitGroupRsFragment(StrBuilder *builder, GroupId gi, const char *lead)
+{
+    const GroupData *groupData = groupDataGet(gi);
+    const uint16_t   type = groupData->type;
+    const uint16_t   memberCount = groupData->entryCount;
+    int              i;
+
+    sb_StrLit(builder, "\"");
+    sb_Str(builder, lead);
+
+    if (kGroupHeap == type)
+    {
+        int reg[2] = { 0, 0 };
+        int emitted = 0;
+
+        sb_StrLit(builder, "DescriptorTable(");
+        i = 0;
+        while (i < memberCount)
+        {
+            const int ro = (kAccessRO == groupEntry(gi, i)->bindAccess);
+            int       run = 1;
+
+            while (i + run < memberCount && (kAccessRO == groupEntry(gi, i + run)->bindAccess) == ro)
+            {
+                ++run;
+            }
+            if (emitted++ > 0)
+            {
+                sb_StrLit(builder, ", ");
+            }
+            sb_Fmt(builder, "%s(%s%d, space=%d, numDescriptors=%d)", ro ? "SRV" : "UAV", ro ? "t" : "u", reg[ro], (int)groupData->space, run);
+            reg[ro] += run;
+            i += run;
+        }
+        sb_StrLit(builder, ")\"");
+        return;
+    }
+
+    assert(groupHasBoundConst(gi) && "emitGroupRsFragment: expected a bound-constant group");
+
+    sb_Fmt(builder, "RootConstants(b0, space=%d, num32BitConstants=%d)\"", (int)groupData->space, (int)memberCount);
+}
+
+static void emitConstGroupBlock(StrBuilder *builder, GroupId gi)
+{
+    const GroupData *groupData = groupDataGet(gi);
+    const char      *gname = nameToCStr(group(gi)->name);
+    const uint16_t   constantCount = groupData->entryCount;
+    const uint32_t   maxTypeLen = groupData->maxMacroLen;
+    int              i;
+
+    sb_Fmt(builder, "typedef struct zstdgpu_%s_Consts\n{\n", gname);
+    for (i = 0; i < constantCount; ++i)
+        sb_Fmt(builder, "    %-*s%s;\n", maxTypeLen, nameToCStr(groupConst(gi, i)->type), nameToCStr(groupConst(gi, i)->name));
+
+    sb_Fmt(builder, "} zstdgpu_%s_Consts;\n\n", gname);
+
+    sb_Fmt(builder, "ConstantBuffer<zstdgpu_%s_Consts> ZstdConstants_%s : register(b0", gname, gname);
+    if (groupData->space > 0)
+        sb_Fmt(builder, ", space%d", (int)groupData->space);
+
+    sb_StrLitEoL(builder, ");\n");
+}
+
+static void emitGroupHeader(const char *dir, GroupId gi)
 {
     StrBuilder  sb = { NULL };
-    StrBuilder *b = &sb;
     StrBuilder  guard = { NULL };
     StrBuilder  path = { NULL };
 
-    sb_Fmt(&guard, "ZSTDGPU_SRT_GENERATED_RS_BIND_GROUP_%s_H", nameToCStr(g->name));
-    sb_Fmt(&path, "%s/ZstdGpuSrt_BindGroup_%s.h", dir, nameToCStr(g->name));
+    const GroupData *groupData = groupDataGet(gi);
+    const char      *gname = nameToCStr(group(gi)->name);
+    const int        isConst = groupTypeIsConst(groupData->type);
 
-    sb_BeginFile(b, sb_CStr(&guard));
+    sb_Fmt(&guard, "ZSTDGPU_SRT_GENERATED_RS_BIND_GROUP_%s_H", gname);
+    sb_Fmt(&path, "%s/ZstdGpuSrt_BindGroup_%s.h", dir, gname);
 
-    /** the start of emitting HLSL-specific declaration */
-    sb_StrLitEoL(b, "#ifdef __hlsl_dx_compiler");
-    sb_ExtraLine(b);
+    sb_BeginFile(&sb, sb_CStr(&guard));
 
-    sb_Fmt(b, "#define ZSTDGPU_SRT_RS_BIND_GROUP_%s ", nameToCStr(g->name));
-    sb_StrLit(b, "\"DescriptorTable(");
-    if (g->srvCount > 0)
+    sb_StrLitEoL(&sb, "#ifdef __hlsl_dx_compiler");
+    sb_ExtraLine(&sb);
+
+    sb_Fmt(&sb, "#define ZSTDGPU_SRT_RS_BIND_GROUP_%s ", gname);
+    emitGroupRsFragment(&sb, gi, "");
+    sb_StrLitEoL(&sb, "\n");
+
+    if (isConst)
     {
-        sb_Fmt(b, "SRV(t0, space=%d, numDescriptors=%d)", (int)g->space, (int)g->srvCount);
+        const uint16_t constantCount = groupData->entryCount;
+        const uint32_t maxNameLen = groupData->maxMemberLen;
+        int            i;
+
+        emitConstGroupBlock(&sb, gi);
+
+        sb_Fmt(&sb, "template<typename T>\nstatic void zstdgpu_Srt_FillBindGroup_%s(ZSTDGPU_PARAM_INOUT(T) srt, zstdgpu_%s_Consts consts)\n{\n", gname, gname);
+        for (i = 0; i < constantCount; ++i)
+            sb_Fmt(&sb, "    srt.%-*s= consts.%s;\n", maxNameLen, nameToCStr(groupConst(gi, i)->name), nameToCStr(groupConst(gi, i)->name));
+
+        sb_StrLitEoL(&sb, "}\n");
     }
-    if (g->uavCount > 0)
+    else
     {
-        if (g->srvCount > 0)
-            sb_StrLit(b, ", ");
+        emitHLSLBindPointNamesWithRegisters(&sb, gi, (int)groupData->space);
 
-        sb_Fmt(b, "UAV(u0, space=%d, numDescriptors=%d)", (int)g->space, (int)g->uavCount);
+        sb_Fmt(&sb, "template<typename T>\nstatic void zstdgpu_Srt_FillBindGroup_%s(ZSTDGPU_PARAM_INOUT(T) srt)\n{\n", gname);
+        emitFillFromGlobals(&sb, gi);
+        sb_StrLitEoL(&sb, "}\n");
+        sb_StrLitEoL(&sb, "#else\n");
+
+        {
+            const int total = (int)hmlen(gGroups);
+            int       c;
+
+            assert(kGroupHeap == groupData->type && "expected a heap group");
+
+            for (c = 0; c < total; ++c)
+            {
+                const GroupId clone = { (uint16_t)c };
+
+                if (groupBase(clone).id == gi.id && groupOwnsTable(clone))
+                {
+                    sb_Fmt(&sb, "template<typename T>\nstatic void zstdgpu_Srt_FillBindGroup_%s(T &srt, const zstdgpu_ResourceDataCpu &cpuRes)\n{\n", nameToCStr(groupTableName(clone)));
+                    emitFillFromResources(&sb, clone);
+                    sb_StrLitEoL(&sb, "}\n");
+                }
+            }
+        }
     }
-    sb_StrLit(b, ")\"");
-    sb_StrLitEoL(b, "\n");
+    sb_StrLitEoL(&sb, "#endif /* #ifdef __hlsl_dx_compiler */");
 
-    emitHLSLBindPointNamesWithRegisters(b, g->entries, g->entryCount, g->space);
-
-    /** emit a function (for HLSL use) that assigns bind group entries to SRT-derived structure from global bind points */
-    sb_Fmt(b, "template<typename T>\nstatic void zstdgpu_Srt_FillBindGroup_%s(ZSTDGPU_PARAM_INOUT(T) srt)\n{\n", nameToCStr(g->name));
-    emitHLSLResourceAssignment(b, g->entries, g->entryCount, NULL);
-    sb_StrLitEoL(b, "}");
-    sb_ExtraLine(b);
-    sb_StrLitEoL(b, "#else");
-    sb_ExtraLine(b);
-
-    /** emit a function (for C++ use) that assigns bind group entries to SRT-derived structure from externally supplied structure */
-    sb_Fmt(b, "template<typename T>\nstatic void zstdgpu_Srt_FillBindGroup_%s(T &srt, const zstdgpu_ResourceDataCpu &cpuRes)\n{\n", nameToCStr(g->name));
-    emitHLSLResourceAssignment(b, g->entries, g->entryCount, "cpuRes");
-    sb_StrLitEoL(b, "}");
-    sb_ExtraLine(b);
-    sb_StrLitEoL(b, "#endif /* #ifdef __hlsl_dx_compiler */");
-
-    sb_EndFile(b, sb_CStr(&guard), sb_CStr(&path));
+    sb_EndFile(&sb, sb_CStr(&guard), sb_CStr(&path));
 
     arrfree(guard.data);
     arrfree(path.data);
-}
-
-/** 1 when the SRT declares explicit passes, so it is only ever used through one of them. */
-static int srtIsMultiPass(int srtIdx)
-{
-    int i;
-
-    for (i = 0; i < g_passCount; ++i)
-    {
-        if (g_passes[i].srtIdx == srtIdx && kNameIdError != g_passes[i].name)
-        {
-            return 1;
-        }
-    }
-    return 0;
 }
 
 static void emitSrtHeader(const char *dir, int srtIdx)
 {
-    const Srt   *srt = &g_srts[srtIdx];
+    const Srt   *srt = &gSrts[srtIdx];
     StrBuilder   sb = { NULL };
-    StrBuilder  *b = &sb;
     StrBuilder   guard = { NULL };
     StrBuilder   path = { NULL };
-    int          i;
     int          resourcesUsed;
-    const int    multiPass = srtIsMultiPass(srtIdx);
+    const int    multiPass = (0 != srt->hasResourceRebindings);
     uint32_t     maxTypeLen = 0, maxNameLen = 0;
-    const Entry *points = srt->rootBufs;
-    const Const *boundConsts = srt->boundConsts;
-    NameId       funcName = kNameIdEmpty;
 
-    /** count maximal spacing */
-    for (i = 0; i < srt->rootBufCount; ++i)
+    if (multiPass)
+        maxTypeLen = srtKindMaxLen(srt, kGroupRoot, kTextMacro);
+    maxNameLen = srtKindMaxLen(srt, kGroupRoot, kTextMember);
+
+    for (int i = 0; i < (int)(sizeof(kBoundConstKinds) / sizeof(kBoundConstKinds[0])); ++i)
     {
-        uint32_t curLen = (uint32_t)nameToCStrLen(points[i].macroText);
-        if (points[i].mod)
-            maxTypeLen = maxTypeLen > curLen ? maxTypeLen : curLen;
+        const uint32_t tlen = srtKindMaxLen(srt, kBoundConstKinds[i], kTextMacro);
+        const uint32_t nlen = srtKindMaxLen(srt, kBoundConstKinds[i], kTextMember);
 
-        curLen = (uint32_t)nameToCStrLen(points[i].memberText);
-        maxNameLen = maxNameLen > curLen ? maxNameLen : curLen;
-    }
-    for (i = 0; i < srt->boundConstCount; ++i)
-    {
-        uint32_t curLen = (uint32_t)nameToCStrLen(boundConsts[i].type);
-        maxTypeLen = maxTypeLen > curLen ? maxTypeLen : curLen;
-
-        curLen = (uint32_t)nameToCStrLen(boundConsts[i].name);
-        maxNameLen = maxNameLen > curLen ? maxNameLen : curLen;
-    }
-    maxTypeLen = (maxTypeLen + 3 + 1) & ~3u;
-    maxNameLen = (maxNameLen + 3 + 1) & ~3u;
-
-    sb_Fmt(&guard, "ZSTDGPU_SRT_GENERATED_%s_H", nameToCStr(srt->name));
-    sb_Fmt(&path, "%s/ZstdGpuSrt_%s.h", dir, nameToCStr(srt->name));
-
-    sb_BeginFile(b, sb_CStr(&guard));
-
-    for (i = 0; i < srt->groupCount; ++i)
-    {
-        sb_Fmt(b, "#include \"ZstdGpuSrt_BindGroup_%s.h\"\n", nameToCStr(g_groups[srt->groupIdx[i]].name));
-    }
-    if (srt->groupCount > 0)
-    {
-        sb_ExtraLine(b);
+        maxTypeLen = maxTypeLen > tlen ? maxTypeLen : tlen;
+        maxNameLen = maxNameLen > nlen ? maxNameLen : nlen;
     }
 
-    sb_StrLitEoL(b, "#ifdef __hlsl_dx_compiler\n");
-    emitHLSLBindPointNamesWithRegisters(b, srt->rootBufs, srt->rootBufCount, -1);
+    sb_Fmt(&guard, "ZSTDGPU_SRT_GENERATED_%s_H", nameToCStr(srt->key));
+    sb_Fmt(&path, "%s/ZstdGpuSrt_%s.h", dir, nameToCStr(srt->key));
 
-    /** emit HLSL constants struct + buffer if there're non-inline constants */
-    if (srt->boundConstCount > 0)
+    sb_BeginFile(&sb, sb_CStr(&guard));
+
     {
-        uint32_t maxLen = 0;
-        sb_Fmt(b, "typedef struct zstdgpu_%s_Consts\n{\n", nameToCStr(srt->name));
+        int included = 0;
 
-        for (i = 0; i < srt->boundConstCount; ++i)
+        forEachSrtGroup(srt, id, grpIdx,
         {
-            uint32_t len = (uint32_t)nameToCStrLen(boundConsts[i].type);
-            maxLen = maxLen > len ? maxLen : len;
-        }
-
-        maxLen = (maxLen + 3 + 1) & ~3u;
-
-        for (i = 0; i < srt->boundConstCount; ++i)
-            sb_Fmt(b, "    %-*s%s;\n", maxLen, nameToCStr(boundConsts[i].type), nameToCStr(boundConsts[i].name));
-
-        sb_Fmt(b, "} zstdgpu_%s_Consts;\n\n", nameToCStr(srt->name));
-        sb_Fmt(b, "ConstantBuffer<zstdgpu_%s_Consts> ZstdConstants_%s : register(b0);\n\n", nameToCStr(srt->name), nameToCStr(srt->name));
-    }
-
-    /* the root signature is composed from the bind group fragments, so a group's text exists once */
-    sb_Fmt(b, "#define ZSTDGPU_SRT_RS_%s", nameToCStr(srt->name));
-
-    /** the root signature starts with a macro fragments expanding to resource tables, one per bind group*/
-    for (i = 0; i < srt->groupCount; ++i)
-    {
-        if (i > 0)
-            sb_StrLit(b, " \", \"");
-
-        sb_Str(b, " ZSTDGPU_SRT_RS_BIND_GROUP_");
-        sb_Str(b, nameToCStr(g_groups[srt->groupIdx[i]].name));
-    }
-    /** then string fragments for root descriptors, one fragment per root bind point */
-    for (i = 0; i < srt->rootBufCount; ++i)
-    {
-        const Entry *e = &srt->rootBufs[i];
-
-        sb_StrLit(b, " \"");
-        if (srt->groupCount + i > 0)
-            sb_StrLit(b, ", ");
-
-        sb_Fmt(b, (kAccessRO == e->access) ? "SRV(t%d)\"" : "UAV(u%d)\"", e->reg);
-    }
-    /** and finally root constants blocks corresponding to bindConsts*/
-    if (srt->boundConstCount > 0)
-    {
-        sb_StrLit(b, " \"");
-        if (srt->groupCount + srt->rootBufCount > 0)
-            sb_StrLit(b, ", ");
-        sb_Fmt(b, "RootConstants(b0, num32BitConstants=%d)\"", srt->boundConstCount);
-    }
-    sb_StrLitEoL(b, "\n");
-
-    /** emit HLSL function */
-    sb_Fmt(b, "static void zstdgpu_Srt_Fill(ZSTDGPU_PARAM_INOUT(zstdgpu_%s_SRT) srt)\n{\n", nameToCStr(srt->name));
-    for (i = 0; i < srt->groupCount; ++i)
-    {
-        sb_Fmt(b, "    zstdgpu_Srt_FillBindGroup_%s(srt);\n", nameToCStr(g_groups[srt->groupIdx[i]].name));
-    }
-    if (srt->groupCount > 0 && (srt->rootBufCount > 0 || srt->constCount > 0))
-    {
-        sb_ExtraLine(b);
-    }
-
-    /** emit HLSL side assignment of SRT-derived structure members corresponding to bind points */
-    for (i = 0; i < srt->rootBufCount; ++i)
-        sb_Fmt(b, "    srt.%-*s= %s;\n", maxNameLen, nameToCStr(points[i].memberText), nameToCStr(points[i].globalText));
-
-    /** emit HLSL side assignment of SRT-derived structure members corresponding to constats */
-    for (i = 0; i < srt->boundConstCount; ++i)
-        sb_Fmt(b, "    srt.%-*s= ZstdConstants_%s.%s;\n", maxNameLen, nameToCStr(boundConsts[i].name), nameToCStr(srt->name), nameToCStr(boundConsts[i].name));
-
-    sb_StrLitEoL(b, "}\n\n#else\n");
-
-    resourcesUsed = (srt->groupCount > 0);
-    for (i = 0; i < srt->rootBufCount; ++i)
-    {
-        /** if at least one bind point is never modified by passes (or SRT doesn't have passes derived from it), resource structure is needed */
-        if (0 == srt->rootBufs[i].mod)
+            if (groupHasHeader(id))
+            {
+                sb_Fmt(&sb, "#include \"ZstdGpuSrt_BindGroup_%s.h\"\n", nameToCStr(group(id)->name));
+                included += 1;
+            }
+        });
+        if (included > 0)
         {
-            resourcesUsed = 1;
-            break;
+            sb_ExtraLine(&sb);
         }
     }
 
-    /** emit C++ function function */
-    funcName = cstrIntern("static void zstdgpu_Srt_Fill(");
-    sb_Fmt(b, "%szstdgpu_%s_SRT &srt, const zstdgpu_ResourceDataCpu %s", nameToCStr(funcName), nameToCStr(srt->name), (0 != resourcesUsed) ? "&cpuRes" : "&");
+    sb_StrLitEoL(&sb, "#ifdef __hlsl_dx_compiler\n");
 
-    /** emit function parameters: bind points modified by passes + constants */
+    forEachGroupInRange(srtGroupRangePerType(srt, kGroupHeap), id,
+    {
+        if (groupIsInlined(id))
+        {
+            emitHLSLBindPointNamesWithRegisters(&sb, id, (int)groupDataGet(id)->space);
+        }
+    });
+
+    emitHLSLRootBindPointNamesWithRegisters(&sb, srt);
+
+    forEachSrtGroup(srt, id, grpIdx,
+    {
+        if (groupIsInlined(id) && kGroupHeap != groupType)
+        {
+            emitConstGroupBlock(&sb, id);
+        }
+    });
+
+    sb_Fmt(&sb, "#define ZSTDGPU_SRT_RS_%s", nameToCStr(srt->key));
+    {
+        int emitted = 0;   /* root parameters written so far; drives the ", " separator */
+
+        forEachSrtGroup(srt, id, grpIdx,
+        {
+            if (groupHasHeader(id) || groupIsInlined(id))
+            {
+                sb_StrLit(&sb, " ");
+                if (groupHasHeader(id))
+                {
+                    if (emitted > 0)
+                        sb_StrLit(&sb, "\", \" ");
+
+                    sb_Str(&sb, "ZSTDGPU_SRT_RS_BIND_GROUP_");
+                    sb_Str(&sb, nameToCStr(group(id)->name));
+                }
+                else
+                {
+                    emitGroupRsFragment(&sb, id, (emitted > 0) ? ", " : "");
+                }
+                emitted += 1;
+            }
+            else if (kGroupRoot == groupType)
+            {
+                forEachEntryInGroup(id, j,
+                {
+                    sb_StrLit(&sb, " \"");
+                    if (emitted > 0)
+                        sb_StrLit(&sb, ", ");
+
+                    sb_Fmt(&sb, (kAccessRO == entry->bindAccess) ? "SRV(t%d, space=%d)\"" : "UAV(u%d, space=%d)\"", (int)groupEntryReg(id, j), (int)groupData->space);
+                    emitted += 1;
+                });
+            }
+        });
+    }
+    sb_StrLitEoL(&sb, "\n");
+
+    sb_Fmt(&sb, "static void zstdgpu_Srt_Fill(ZSTDGPU_PARAM_INOUT(zstdgpu_%s_SRT) srt)\n{\n", nameToCStr(srt->key));
+    {
+        int filled = 0;
+
+        forEachSrtGroup(srt, id, grpIdx,
+        {
+            const char *gname = nameToCStr(group(id)->name);
+
+            if (groupHasHeader(id))
+            {
+                if (kGroupHeap == groupType)
+                    sb_Fmt(&sb, "    zstdgpu_Srt_FillBindGroup_%s(srt);\n", gname);
+                else
+                    sb_Fmt(&sb, "    zstdgpu_Srt_FillBindGroup_%s(srt, ZstdConstants_%s);\n", gname, gname);
+
+                filled += 1;
+            }
+            else if (groupIsInlined(id))
+            {
+                if (kGroupHeap == groupType)
+                {
+                    emitFillFromGlobals(&sb, id);
+                }
+                else
+                {
+                    for (uint16_t j = 0; j < groupData->entryCount; ++j)
+                        sb_Fmt(&sb, "    srt.%-*s= ZstdConstants_%s.%s;\n", maxNameLen, nameToCStr(groupConst(id, j)->name), gname, nameToCStr(groupConst(id, j)->name));
+                }
+                filled += 1;
+            }
+        });
+        if (filled > 0 && srtGroupEntryCount(srt, kGroupRoot) > 0)
+        {
+            sb_ExtraLine(&sb);
+        }
+    }
+
+    forEachGroupEntry(srtGroupRangePerType(srt, kGroupRoot), gid, j,
+    {
+        sb_Fmt(&sb, "    srt.%-*s= %s;\n", maxNameLen, nameToCStr(entryText->memberText), nameToCStr(entryText->globalText));
+    });
+
+    sb_StrLitEoL(&sb, "}\n\n#else\n");
+
+    resourcesUsed = (srtGroupRangePerType(srt, kGroupHeap).count > 0) || (0 == multiPass && srtGroupEntryCount(srt, kGroupRoot) > 0);
+
+    static const char fillPrefix[] = "static void zstdgpu_Srt_Fill(";
+    sb_Fmt(&sb, "%szstdgpu_%s_SRT &srt, const zstdgpu_ResourceDataCpu %s", fillPrefix, nameToCStr(srt->key), (0 != resourcesUsed) ? "&cpuRes" : "&");
+
     if (0 != multiPass)
     {
-        for (i = 0; i < srt->rootBufCount; ++i)
+        forEachGroupEntry(srtGroupRangePerType(srt, kGroupRoot), gid, j,
         {
-            if (points[i].mod)
-                sb_Fmt(b, ",\n%*s%-*s %s", (uint32_t)nameToCStrLen(funcName), "", maxTypeLen, nameToCStr(points[i].macroText), nameToCStr(points[i].memberText));
-        }
+            sb_Fmt(&sb, ",\n%*s%-*s %s", (int)(sizeof(fillPrefix) - 1), "", maxTypeLen, nameToCStr(entryText->macroText), nameToCStr(entryText->memberText));
+        });
     }
 
-    for (i = 0; i < srt->boundConstCount; ++i)
-        sb_Fmt(b, ",\n%*s%-*s %s", (uint32_t)nameToCStrLen(funcName), "", maxTypeLen, nameToCStr(boundConsts[i].type), nameToCStr(boundConsts[i].name));
-
-    sb_StrLitEoL(b, ")\n{");
-
-    /** emit per bind group calls*/
-    for (i = 0; i < srt->groupCount; ++i)
-        sb_Fmt(b, "    zstdgpu_Srt_FillBindGroup_%s(srt, cpuRes);\n", nameToCStr(g_groups[srt->groupIdx[i]].name));
-
-    if (srt->groupCount > 0 && srt->rootBufCount > 0)
-        sb_ExtraLine(b);
-
-    /** emit per bind point assignments  */
-    for (i = 0; i < srt->rootBufCount; ++i)
+    forEachSrtBoundConst(srt, groupType, gid, idx,
     {
-        sb_Fmt(b, "    srt.%-*s= ", maxNameLen, nameToCStr(points[i].memberText));
-        if (0 != points[i].mod)
+        sb_Fmt(&sb, ",\n%*s%-*s %s", (int)(sizeof(fillPrefix) - 1), "", maxTypeLen, nameToCStr(cst->type), nameToCStr(cst->name));
+    });
+
+    sb_StrLitEoL(&sb, ")\n{");
+
+    forEachGroupInRange(srtGroupRangePerType(srt, kGroupHeap), id,
+    {
+        const GroupId shared = srtSharedTable(srtIdx, id);
+
+        if (groupIdIsValid(shared))
         {
-            sb_Str(b, nameToCStr(points[i].memberText));
+            if (groupHasHeader(id))
+            {
+                sb_Fmt(&sb, "    zstdgpu_Srt_FillBindGroup_%s(srt, cpuRes);\n", nameToCStr(groupTableName(shared)));
+            }
+            else
+            {
+                emitFillFromResources(&sb, shared);
+            }
+        }
+    });
+
+    if (srtGroupRangePerType(srt, kGroupHeap).count > 0 && srtGroupEntryCount(srt, kGroupRoot) > 0)
+        sb_ExtraLine(&sb);
+
+    forEachGroupEntry(srtGroupRangePerType(srt, kGroupRoot), gid, j,
+    {
+        sb_Fmt(&sb, "    srt.%-*s= ", maxNameLen, nameToCStr(entryText->memberText));
+        if (0 != multiPass)
+        {
+            sb_Str(&sb, nameToCStr(entryText->memberText));
         }
         else
         {
-            sb_Fmt(b, "cpuRes.%s", nameToCStr(points[i].name));
+            sb_Fmt(&sb, "cpuRes.%s", nameToCStr(entry->resName));
         }
-        sb_StrLitEoL(b, ";");
-    }
-    for (i = 0; i < srt->boundConstCount; ++i)
-        sb_Fmt(b, "    srt.%-*s= %s;\n", maxNameLen, nameToCStr(boundConsts[i].name), nameToCStr(boundConsts[i].name));
+        sb_StrLitEoL(&sb, ";");
+    });
+    forEachSrtBoundConst(srt, groupType, gid, idx,
+    {
+        sb_Fmt(&sb, "    srt.%-*s= %s;\n", maxNameLen, nameToCStr(cst->name), nameToCStr(cst->name));
+    });
 
-    sb_StrLitEoL(b, "}\n");
+    sb_StrLitEoL(&sb, "}\n");
 
     if (0 != multiPass)
     {
-        for (int passIdx = 0; passIdx < g_passCount; ++passIdx)
+        for (size_t passIdx = 0; passIdx < passCount(); ++passIdx)
         {
-            const Pass *pass = &g_passes[passIdx];
+            const Pass *pass = &gPasses[passIdx];
 
             if (pass->srtIdx == srtIdx)
             {
-                sb_Fmt(b, "static void zstdgpu_Srt_Fill_%s(zstdgpu_%s_SRT &srt, const zstdgpu_ResourceDataCpu &cpuRes", nameToCStr(pass->name), nameToCStr(srt->name));
-                for (i = 0; i < srt->boundConstCount; ++i)
-                    sb_Fmt(b, ", %s %s", nameToCStr(boundConsts[i].type), nameToCStr(boundConsts[i].name));
-
-                sb_StrLitEoL(b, ")\n{");
-                sb_StrLit(b, "    zstdgpu_Srt_Fill(srt, cpuRes");
-                for (i = 0; i < srt->rootBufCount; ++i)
+                sb_Fmt(&sb, "static void zstdgpu_Srt_Fill_%s(zstdgpu_%s_SRT &srt, const zstdgpu_ResourceDataCpu &cpuRes", nameToCStr(pass->name), nameToCStr(srt->key));
+                forEachSrtBoundConst(srt, groupType, gid, idx,
                 {
-                    if (0 != points[i].mod)
-                        sb_Fmt(b, ", cpuRes.%s", nameToCStr(pass->resources[i]));
-                }
-                for (i = 0; i < srt->boundConstCount; ++i)
-                    sb_Fmt(b, ", %s", nameToCStr(boundConsts[i].name));
+                    sb_Fmt(&sb, ", %s %s", nameToCStr(cst->type), nameToCStr(cst->name));
+                });
 
-                sb_StrLitEoL(b, ");\n}\n");
+                sb_StrLitEoL(&sb, ")\n{");
+                forEachGroupInRange(passGroupRangePerType(pass, kGroupHeap), gid,
+                {
+                    if (!groupIdIsValid(srtSharedTable(srtIdx, groupBase(gid))))
+                    {
+                        sb_Fmt(&sb, "    zstdgpu_Srt_FillBindGroup_%s(srt, cpuRes);\n", nameToCStr(groupTableName(gid)));
+                    }
+                });
+                sb_StrLit(&sb, "    zstdgpu_Srt_Fill(srt, cpuRes");
+                forEachGroupEntry(passGroupRangePerType(pass, kGroupRoot), rootGid, rootIdx,
+                {
+                    sb_Fmt(&sb, ", cpuRes.%s", nameToCStr(entry->resName));
+                });
+                forEachSrtBoundConst(srt, groupType, gid, idx,
+                {
+                    sb_Fmt(&sb, ", %s", nameToCStr(cst->name));
+                });
+
+                sb_StrLitEoL(&sb, ");\n}\n");
             }
         }
     }
 
-    sb_StrLitEoL(b, "#endif\n");
+    sb_StrLitEoL(&sb, "#endif\n");
 
-    if (srt->inlineConstCount > 0)
+    if (srtGroupEntryCount(srt, kGroupConstInline) > 0)
     {
-        const Const *inlineConsts = srt->inlineConsts;
 
-        sb_Fmt(b, "static void zstdgpu_Srt_FillInline(ZSTDGPU_PARAM_INOUT(zstdgpu_%s_SRT) srt", nameToCStr(srt->name));
-        for (i = 0; i < srt->inlineConstCount; ++i)
-            sb_Fmt(b, ", %s %s", nameToCStr(inlineConsts[i].type), nameToCStr(inlineConsts[i].name));
+        sb_Fmt(&sb, "static void zstdgpu_Srt_FillInline(ZSTDGPU_PARAM_INOUT(zstdgpu_%s_SRT) srt", nameToCStr(srt->key));
+        forEachGroupConst(srtGroupRangePerType(srt, kGroupConstInline), gid, idx,
+        {
+            sb_Fmt(&sb, ", %s %s", nameToCStr(cst->type), nameToCStr(cst->name));
+        });
 
-        sb_StrLitEoL(b, ")\n{");
-        for (i = 0; i < srt->inlineConstCount; ++i)
-            sb_Fmt(b, "    srt.%-*s= %s;\n", 48, nameToCStr(inlineConsts[i].name), nameToCStr(inlineConsts[i].name));
+        sb_StrLitEoL(&sb, ")\n{");
+        forEachGroupConst(srtGroupRangePerType(srt, kGroupConstInline), gid, idx,
+        {
+            sb_Fmt(&sb, "    srt.%-*s= %s;\n", 48, nameToCStr(cst->name), nameToCStr(cst->name));
+        });
 
-        sb_StrLitEoL(b, "}\n");
+        sb_StrLitEoL(&sb, "}\n");
     }
 
-    sb_EndFile(b, sb_CStr(&guard), sb_CStr(&path));
+    sb_EndFile(&sb, sb_CStr(&guard), sb_CStr(&path));
 
     arrfree(guard.data);
     arrfree(path.data);
 }
 
-static int collectStageGroups(int stage, int *outGroupIdx)
-{
-    int count = 0;
-    int i;
-
-    for (i = 0; i < g_groupCount; ++i)
-    {
-        if (0 != (g_groups[i].stageMask & (1 << stage)))
-        {
-            outGroupIdx[count++] = i;
-        }
-    }
-    return count;
-}
 
 static void emitStructs(const char *dir)
 {
     StrBuilder  sb = { NULL };
-    StrBuilder *b = &sb;
     StrBuilder  path = { NULL };
     const char *guard = "ZSTDGPU_SRT_GENERATED_STRUCTS_H";
-    int         s;
-    int         i;
-    int         j;
 
     sb_Fmt(&path, "%s/zstdgpu_srt_structs.h", dir);
 
-    sb_BeginFile(b, guard);
+    sb_BeginFile(&sb, guard);
 
-    for (s = 0; s < g_srtCount; ++s)
+    for (size_t s = 0; s < srtCount(); ++s)
     {
-        const Srt *srt = &g_srts[s];
+        const Srt *srt = &gSrts[s];
 
-        sb_Fmt(b, "typedef struct zstdgpu_%s_SRT\n{\n", nameToCStr(srt->name));
+        sb_Fmt(&sb, "typedef struct zstdgpu_%s_SRT\n{\n", nameToCStr(srt->key));
 
-        for (i = 0; i < srt->groupCount; ++i)
+        forEachGroupEntry(srtGroupRangePerType(srt, kGroupHeap), gi, k,
         {
-            const Group *g = &g_groups[srt->groupIdx[i]];
-            for (j = 0; j < g->entryCount; ++j)
-            {
-                const Entry *e = &g->entries[j];
-
-                sb_Fmt(b, "    %-*s%s;\n", 56, nameToCStr(e->macroText), nameToCStr(e->memberText));
-            }
-        }
-        for (i = 0; i < srt->rootBufCount; ++i)
+            sb_Fmt(&sb, "    %-*s%s;\n", 56, nameToCStr(entryText->macroText), nameToCStr(entryText->memberText));
+        });
+        forEachGroupEntry(srtGroupRangePerType(srt, kGroupRoot), gi, k,
         {
-            const Entry *e = &srt->rootBufs[i];
-
-            sb_Fmt(b, "    %-*s%s;\n", 56, nameToCStr(e->macroText), nameToCStr(e->memberText));
-        }
-        for (i = 0; i < srt->constCount; ++i)
+            sb_Fmt(&sb, "    %-*s%s;\n", 56, nameToCStr(entryText->macroText), nameToCStr(entryText->memberText));
+        });
+        forEachSrtBoundConst(srt, groupType, gid, idx,
         {
-            sb_Fmt(b, "    %-*s%s;\n", 56, nameToCStr(srt->consts[i].type), nameToCStr(srt->consts[i].name));
-        }
-        sb_Fmt(b, "} zstdgpu_%s_SRT;\n\n", nameToCStr(srt->name));
+            sb_Fmt(&sb, "    %-*s%s;\n", 56, nameToCStr(cst->type), nameToCStr(cst->name));
+        });
+        forEachGroupConst(srtGroupRangePerType(srt, kGroupConstInline), gid, idx,
+        {
+            sb_Fmt(&sb, "    %-*s%s;\n", 56, nameToCStr(cst->type), nameToCStr(cst->name));
+        });
+        sb_Fmt(&sb, "} zstdgpu_%s_SRT;\n\n", nameToCStr(srt->key));
     }
 
-    sb_EndFile(b, guard, sb_CStr(&path));
+    sb_EndFile(&sb, guard, sb_CStr(&path));
 
     arrfree(path.data);
 }
 
-static void emitConstsRootSlots(StrBuilder *b)
+static void emitConstOffsets(StrBuilder *builder)
 {
     int emitted = 0;
-    int i;
 
-    for (i = 0; i < g_srtCount; ++i)
+    for (size_t i = 0; i < srtCount(); ++i)
     {
-        const Srt *srt = &g_srts[i];
-
-        if (0 == srt->boundConstCount)
-            continue;
-
-        if (0 == emitted)
-        {
-            sb_StrLitEoL(b, "/**\n"
-                            " * Root parameter index of an SRT's constants block bound that must be set by Indirect arguments\n"
-                            " * Pass this to ZSTDGPU_DISPATCH32_CMD_SIG or zstdgpu_Dispatch32Bit instead of a hand-written number.\n"
-                            " */");
-            emitted = 1;
-        }
-
-        const char *srtName = nameToCStr(srt->name);
+        const Srt  *srt = &gSrts[i];
+        const int   indirectCnt = srtGroupEntryCount(srt, kGroupConstIndirect);
+        const char *srtName = nameToCStr(srt->key);
         const int   gap = (25 > (int)strlen(srtName)) ? 25 - (int)strlen(srtName) : 1;
 
-        sb_Fmt(b, "static const uint32_t kzstdgpu_SrtConstsRootSlot_%s%*s= %d;\n",
-            srtName, gap, "", srtConstsRootSlot(srt));
+        if (0 == indirectCnt + srtGroupEntryCount(srt, kGroupConst))
+            continue;
+
+        emitted = 1;
+
+        if (indirectCnt > 0)
+        {
+            sb_Fmt(builder, "static const uint32_t kzstdgpu_Srt_ConstIndirect_Cnt_%s%*s= %d;\n", srtName, gap, "", indirectCnt);
+        }
+        sb_Fmt(builder, "static const uint32_t kzstdgpu_Srt_ConstIndirect_Idx_%s%*s= %d;\n", srtName, gap, "", srtIndirectConstsRootSlot(srt));
     }
 
     if (0 != emitted)
     {
-        sb_ExtraLine(b);
+        sb_ExtraLine(builder);
+        emitted = 0;
     }
-}
 
-static const char *dxgiFormatForCpuType(NameId dataType)
-{
-    static const char *const kMap[][2] = {
-        {  "uint8_t",   "DXGI_FORMAT_R8_UINT" },
-        { "uint16_t",  "DXGI_FORMAT_R16_UINT" },
-        { "uint32_t",  "DXGI_FORMAT_R32_UINT" },
-        {  "int16_t",  "DXGI_FORMAT_R16_SINT" },
-        {  "int32_t",  "DXGI_FORMAT_R32_SINT" },
-        {    "float", "DXGI_FORMAT_R32_FLOAT" }
-    };
-    const char *name = nameToCStr(dataType);
-    int         i;
-
-    for (i = 0; i < (int)(sizeof(kMap) / sizeof(kMap[0])); ++i)
+    for (size_t i = 0; i < srtCount(); ++i)
     {
-        if (0 == strcmp(name, kMap[i][0]))
+        const Srt *srt = &gSrts[i];
+
+        forEachSrtBoundConst(srt, groupType, owner, inGroup,
         {
-            return kMap[i][1];
-        }
+            const char *srtName = nameToCStr(srt->key);
+            const char *cName = nameToCStr(cst->name);
+            const int   len = (int)strlen(srtName) + 1 + (int)strlen(cName);
+            const int   gap = (45 > len) ? 45 - len : 1;
+            const int   idxGap = (44 > len) ? 44 - len : 1;
+
+            emitted = 1;
+
+            sb_Fmt(builder, "static const uint32_t kzstdgpu_Srt_Const_Idx_%s_%s%*s= %d;\n", srtName, cName, idxGap, "", srtGroupRootParam(srt, owner));
+            sb_Fmt(builder, "static const uint32_t kzstdgpu_Srt_Const_Ofs_%s_%s%*s= %d;\n", srtName, cName, gap, "", (int)inGroup);
+        });
     }
-    fail("no DXGI format mapping for typed buffer element type '%s' -- add it to dxgiFormatForCpuType", name);
-    return "DXGI_FORMAT_UNKNOWN";
+
+    if (0 != emitted)
+    {
+        sb_ExtraLine(builder);
+    }
 }
 
-static void emitBindGroupEntryPush(StrBuilder *b, const Entry *e)
+static void emitBindGroupEntryPush(StrBuilder *builder, const Entry *entryValue, NameId res)
 {
-    const char *name = nameToCStr(e->name);
-    const char *view = (kAccessRO == e->access) ? "Srv" : "Uav";
+    const char *name = nameToCStr(res);
+    const char *view = (kAccessRO == entryValue->bindAccess) ? "Srv" : "Uav";
 
-    if (kKindByte == e->kind)
+    if (kKindByte == entryValue->kind)
     {
-        sb_Fmt(b, "    zstdgpu_Srt_PushRawBufferSrv(cpuDest, descSize, device, b.%s, resInfo.%s_ByteSize);\n", name, name);
+        sb_Fmt(builder, "    zstdgpu_Srt_PushRawBuffer%s(cpuDest, descSize, device, b.%s, resInfo.%s_ByteSize);\n", view, name, name);
     }
-    else if (kKindTyped == e->kind)
+    else if (kKindTyped == entryValue->kind)
     {
-        sb_Fmt(b, "    zstdgpu_Srt_PushTypedBuffer%s(cpuDest, descSize, device, b.%s, resInfo.%s_ByteSize, %s, sizeof(%s));\n", view, name, name, dxgiFormatForCpuType(e->dataType), nameToCStr(e->dataType));
-    }
-    else if (kKindStruct == e->kind)
-    {
-        sb_Fmt(b, "    zstdgpu_Srt_PushStructBuffer%s(cpuDest, descSize, device, b.%s, resInfo.%s_ByteSize, sizeof(%s));\n", view, name, name, nameToCStr(e->dataType));
+        const char *format = dxgiFormatForCpuType(nameToCStr(entryValue->dataType));
+
+        assert(NULL != format && "typed buffer reached emission with no DXGI format");
+        sb_Fmt(builder, "    zstdgpu_Srt_PushTypedBuffer%s(cpuDest, descSize, device, b.%s, resInfo.%s_ByteSize, %s, sizeof(%s));\n", view, name, name, format, nameToCStr(entryValue->dataType));
     }
     else
     {
-        fail("Unknown buffer kind (%u) while processing '%s' bind pointt", e->kind, name);
+        assert(kKindStruct == entryValue->kind && "Entry::kind holds a value no declaration macro can produce");
+        sb_Fmt(builder, "    zstdgpu_Srt_PushStructBuffer%s(cpuDest, descSize, device, b.%s, resInfo.%s_ByteSize, sizeof(%s));\n", view, name, name, nameToCStr(entryValue->dataType));
     }
 }
 
-static void emitBindGroups(StrBuilder *b)
+static void emitBindGroups(StrBuilder *builder)
 {
-    int stageGroups[MAX_GROUPS];
     int stage;
-    int i, j;
 
-    emitConstsRootSlots(b);
+    emitConstOffsets(builder);
 
-    sb_StrLitEoL(b, "/**\n"
-                    " * Descriptors each stage's bind groups occupy in the shader-visible heap.\n"
-                    " * Known at generation time; heap sizing needs it before any descriptor exists.\n"
-                    " */");
-    sb_StrLit(b, "static const uint32_t zstdgpu_kSrtStageDescCount[] = {");
+    sb_StrLit(builder, "static const uint32_t kzstdgpu_Srt_HeapDescCounts[] = {");
     for (stage = 0; stage < STAGE_COUNT; ++stage)
     {
-        const int count = collectStageGroups(stage, stageGroups);
-        int       total = 0;
+        int total = 0;
 
-        for (j = 0; j < count; ++j)
+        forEachStageTable(stage, gid,
         {
-            total += g_groups[stageGroups[j]].entryCount;
-        }
-        sb_Fmt(b, "%s %d", (0 == stage) ? "" : ",", total);
+            total += groupData->entryCount;
+        });
+        sb_Fmt(builder, "%s %d", (0 == stage) ? "" : ",", total);
     }
-    sb_StrLitEoL(b, " };\n");
+    sb_StrLitEoL(builder, " };\n");
 
     for (stage = 0; stage < STAGE_COUNT; ++stage)
     {
-        const int count = collectStageGroups(stage, stageGroups);
-
-        sb_Fmt(b, "/** GPU descriptor table handles of the bind groups that live in stage %d. */\n", stage);
-        sb_Fmt(b, "struct zstdgpu_Srt_BindGroups_Stage%d\n{\n", stage);
-        for (j = 0; j < count; ++j)
+        sb_Fmt(builder, "/** GPU descriptor table handles of the bind groups that live in stage %d. */\n", stage);
+        sb_Fmt(builder, "struct zstdgpu_Srt_BindGroups_Stage%d\n{\n", stage);
+        forEachStageTable(stage, gid,
         {
-            sb_StrLit(b, "    D3D12_GPU_DESCRIPTOR_HANDLE ");
-            sb_Str(b, nameToCStr(g_groups[stageGroups[j]].name));
-            sb_StrLitEoL(b, ";");
-        }
-        sb_StrLitEoL(b, "};\n");
+            sb_StrLit(builder, "    D3D12_GPU_DESCRIPTOR_HANDLE ");
+            sb_Str(builder, nameToCStr(groupTableName(gid)));
+            sb_StrLitEoL(builder, ";");
+        });
+        sb_StrLitEoL(builder, "};\n");
     }
 
-    sb_StrLitEoL(b, "/**\n"
+    sb_StrLitEoL(builder, "/**\n"
                     " * Everything a generated binder needs: the shader-visible descriptor heap, the compute\n"
                     " * PSO/root-signature pair of every SRT, and the per-stage bind group handles.\n"
                     " */\n"
                     "struct zstdgpu_Srts\n"
                     "{");
-    sb_StrLitEoL(b, "    ID3D12DescriptorHeap         *heap;");
-    sb_StrLitEoL(b, "    uint32_t                      heapOffset;\n");
-    for (i = 0; i < g_srtCount; ++i)
+    sb_StrLitEoL(builder, "    ID3D12DescriptorHeap         *heap;");
+    sb_StrLitEoL(builder, "    uint32_t                      heapOffset;\n");
+    for (size_t i = 0; i < srtCount(); ++i)
     {
-        sb_StrLit(b, "    d3d12aid_ComputeRsPs          ");
-        sb_Str(b, nameToCStr(g_srts[i].name));
-        sb_StrLitEoL(b, ";");
+        sb_StrLit(builder, "    d3d12aid_ComputeRsPs          ");
+        sb_Str(builder, nameToCStr(gSrts[i].key));
+        sb_StrLitEoL(builder, ";");
     }
-    sb_ExtraLine(b);
+    sb_ExtraLine(builder);
     for (stage = 0; stage < STAGE_COUNT; ++stage)
     {
-        sb_Fmt(b, "    zstdgpu_Srt_BindGroups_Stage%d stage%d;\n", stage, stage);
+        sb_Fmt(builder, "    zstdgpu_Srt_BindGroups_Stage%d stage%d;\n", stage, stage);
     }
-    sb_StrLitEoL(b, "};\n");
+    sb_StrLitEoL(builder, "};\n");
 
-    sb_StrLitEoL(b,
+    sb_StrLitEoL(builder,
         "static D3D12_SHADER_RESOURCE_VIEW_DESC *zstdgpu_SRV_InitAsInvalidBuffer(D3D12_SHADER_RESOURCE_VIEW_DESC *outDesc, uint64_t sizeInBytes, uint32_t strideSizeInBytes)\n"
         "{\n"
         "    ZSTDGPU_ASSERT(0 == sizeInBytes % strideSizeInBytes);\n"
@@ -1538,146 +2736,429 @@ static void emitBindGroups(StrBuilder *b)
         "    cpuDest.ptr += descSize;\n"
         "}\n");
 
-    /** emit C++ bind group initialiser */
-    for (i = 0; i < g_groupCount; ++i)
     {
-        const Group *g = &g_groups[i];
+        const int total = (int)hmlen(gGroups);
+        int       c;
 
-        sb_Fmt(b, "static D3D12_GPU_DESCRIPTOR_HANDLE zstdgpu_Srt_InitBindGroup_%s(zstdgpu_Srts &srts, ID3D12Device *device, const zstdgpu_ResourceInfo &resInfo, const zstdgpu_GpuOnlyBuffers &b)\n{\n", nameToCStr(g->name));
-        sb_StrLitEoL(b, "    const uint32_t descSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);");
-        sb_StrLitEoL(b, "    const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = d3d12aid_DescriptorHeap_GetCpuStart(srts.heap);");
-        sb_StrLitEoL(b, "    const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = d3d12aid_DescriptorHeap_GetGpuStart(srts.heap);");
-        sb_StrLitEoL(b, "    const D3D12_GPU_DESCRIPTOR_HANDLE gpuDest  = { gpuStart.ptr + (UINT64)srts.heapOffset * descSize };");
-        sb_StrLitEoL(b, "    D3D12_CPU_DESCRIPTOR_HANDLE       cpuDest  = { cpuStart.ptr + (SIZE_T)srts.heapOffset * descSize };\n");
-        for (j = 0; j < g->entryCount; ++j)
+        for (c = 0; c < total; ++c)
         {
-            emitBindGroupEntryPush(b, &g->entries[j]);
+            const GroupId clone = { (uint16_t)c };
+
+            if (kGroupHeap == groupDataGet(clone)->type && groupOwnsTable(clone))
+            {
+                const GroupData *tableOwnerData = groupDataGet(clone);
+
+                sb_Fmt(builder, "static D3D12_GPU_DESCRIPTOR_HANDLE zstdgpu_Srt_InitBindGroup_%s(zstdgpu_Srts &srts, ID3D12Device *device, const zstdgpu_ResourceInfo &resInfo, const zstdgpu_GpuOnlyBuffers &b)\n{\n", nameToCStr(groupTableName(clone)));
+                sb_StrLitEoL(builder, "    const uint32_t descSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);");
+                sb_StrLitEoL(builder, "    const D3D12_CPU_DESCRIPTOR_HANDLE cpuStart = d3d12aid_DescriptorHeap_GetCpuStart(srts.heap);");
+                sb_StrLitEoL(builder, "    const D3D12_GPU_DESCRIPTOR_HANDLE gpuStart = d3d12aid_DescriptorHeap_GetGpuStart(srts.heap);");
+                sb_StrLitEoL(builder, "    const D3D12_GPU_DESCRIPTOR_HANDLE gpuDest  = { gpuStart.ptr + (UINT64)srts.heapOffset * descSize };");
+                sb_StrLitEoL(builder, "    D3D12_CPU_DESCRIPTOR_HANDLE       cpuDest  = { cpuStart.ptr + (SIZE_T)srts.heapOffset * descSize };\n");
+                forEachEntryInGroup(clone, j,
+                {
+                    emitBindGroupEntryPush(builder, entry, entry->resName);
+                });
+                sb_Fmt(builder, "\n    srts.heapOffset += %d;\n    return gpuDest;\n}\n\n", (int)tableOwnerData->entryCount);
+            }
         }
-        sb_Fmt(b, "\n    srts.heapOffset += %d;\n    return gpuDest;\n}\n\n", (int)g->entryCount);
     }
 
     for (stage = 0; stage < STAGE_COUNT; ++stage)
     {
-        const int count = collectStageGroups(stage, stageGroups);
+        sb_Fmt(builder, "static void zstdgpu_Srt_InitBindGroups_Stage%d(zstdgpu_Srts &srts, ID3D12Device *device, const zstdgpu_ResourceInfo &resInfo, const zstdgpu_GpuOnlyBuffers &b)\n{\n", stage);
+        int hasTables = 0;
 
-        sb_Fmt(b, "static void zstdgpu_Srt_InitBindGroups_Stage%d(zstdgpu_Srts &srts, ID3D12Device *device, const zstdgpu_ResourceInfo &resInfo, const zstdgpu_GpuOnlyBuffers &b)\n{\n", stage);
-        if (0 == count)
+        forEachStageTable(stage, gid,
         {
-            sb_StrLitEoL(b, "    /* no descriptor tables in this stage */");
-        }
-        for (j = 0; j < count; ++j)
+            const char *tableName = nameToCStr(groupTableName(gid));
+
+            sb_Fmt(builder, "    srts.stage%d.%s = zstdgpu_Srt_InitBindGroup_%s(srts, device, resInfo, b);\n", stage, tableName, tableName);
+            hasTables = 1;
+        });
+        if (0 == hasTables)
         {
-            const char *name = nameToCStr(g_groups[stageGroups[j]].name);
-            sb_Fmt(b, "    srts.stage%d.%s = zstdgpu_Srt_InitBindGroup_%s(srts, device, resInfo, b);\n", stage, name, name);
+            sb_StrLitEoL(builder, "    /* no descriptor tables in this stage */");
         }
-        sb_StrLitEoL(b, "}\n");
+        sb_StrLitEoL(builder, "}\n");
     }
 
-    /* two call sites choose the stage at run time */
-    sb_StrLitEoL(b, "static void zstdgpu_Srt_InitBindGroups_Stage(zstdgpu_Srts &srts, ID3D12Device *device, const zstdgpu_ResourceInfo &resInfo, const zstdgpu_GpuOnlyBuffers &b, uint32_t stageIndex)\n"
+    sb_StrLitEoL(builder, "static void zstdgpu_Srt_InitBindGroups_Stage(zstdgpu_Srts &srts, ID3D12Device *device, const zstdgpu_ResourceInfo &resInfo, const zstdgpu_GpuOnlyBuffers &b, uint32_t stageIndex)\n"
                     "{\n"
                     "    switch (stageIndex)\n"
                     "    {");
     for (stage = 0; stage < STAGE_COUNT; ++stage)
     {
-        sb_Fmt(b, "    case %d: zstdgpu_Srt_InitBindGroups_Stage%d(srts, device, resInfo, b); break;\n", stage, stage);
+        sb_Fmt(builder, "    case %d: zstdgpu_Srt_InitBindGroups_Stage%d(srts, device, resInfo, b); break;\n", stage, stage);
     }
-    sb_StrLitEoL(b, "    default: ZSTDGPU_ASSERT(0); break;\n"
+    sb_StrLitEoL(builder, "    default: ZSTDGPU_ASSERT(0); break;\n"
                     "    }\n"
                     "}\n");
+}
+
+static void assignTableOwners(void)
+{
+    forEachGroup(gi,
+    {
+        if (kGroupHeap == groupType)
+        {
+            groupData->tableOwner = gi.id;
+            if (groupIsClone(gi) && 0 != groupData->stageMask)
+            {
+                const GroupId base = groupBase(gi);
+
+                for (uint16_t other = base.id; other < gi.id; ++other)
+                {
+                    const GroupId sib = { other };
+
+                    if (groupBase(sib).id == base.id && groupOwnsTable(sib))
+                    {
+                        int same = 1;
+
+                        forEachEntryInGroup(gi, j,
+                        {
+                            if (entry->resName != groupEntry(sib, j)->resName)
+                            {
+                                same = 0;
+                                break;
+                            }
+                        });
+                        if (same)
+                        {
+                            groupData->tableOwner = sib.id;
+                            groupDataGet(sib)->stageMask |= groupData->stageMask;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (groupOwnsTable(gi))
+            {
+                if (groupIsClone(gi))
+                {
+                    groupData->tableName = nameConcatWithUnderscore(group(gi)->name, groupData->cloneSuffix);
+                }
+                else
+                {
+                    groupData->tableName = group(gi)->name;
+                }
+            }
+        }
+    });
+}
+
+typedef struct ResAccess
+{
+    NameId   res;
+    uint16_t access;
+} ResAccess;
+
+typedef struct ResAccessRange
+{
+    uint16_t first;
+    uint8_t  count;
+} ResAccessRange;
+
+static ResAccess      *gResAccessAll = NULL;
+static ResAccessRange *gPassResAccessRange = NULL;
+
+static int accessIsRead(uint16_t access)
+{
+    return kAccessRO == access || kAccessIndirect == access || kAccessROIndirect == access;
+}
+
+static uint16_t accessMerge(uint16_t leftAccess, uint16_t rightAccess)
+{
+    if (leftAccess == rightAccess)
+    {
+        return leftAccess;
+    }
+    if ((kAccessRW == leftAccess || kAccessRNW == leftAccess) && (kAccessRW == rightAccess || kAccessRNW == rightAccess))
+    {
+        return kAccessRW;   /* one written view makes the whole resource a written UAV */
+    }
+    if (accessIsRead(leftAccess) && accessIsRead(rightAccess))
+    {
+        return kAccessROIndirect;
+    }
+    return kAccessNone;
+}
+
+static void resAccessAdd(const Pass *pass, const Srt *srt, int first, NameId res, uint16_t access)
+{
+    assert(access < (uint16_t)(sizeof(kAccessTokenText) / sizeof(kAccessTokenText[0])) && "resource access has no emitted token");
+    for (ptrdiff_t i = first; i < arrlen(gResAccessAll); ++i)
+    {
+        if (gResAccessAll[i].res == res)
+        {
+            const uint16_t merged = accessMerge(gResAccessAll[i].access, access);
+
+            if (kAccessNone == merged)
+            {
+                fail("SRT '%s' pass '%s' needs resource '%s' in incompatible states for one dispatch -- UNORDERED_ACCESS cannot combine with a read state", nameToCStr(srt->key), nameToCStr(pass->name), nameToCStr(res));
+                return;
+            }
+            gResAccessAll[i].access = merged;
+            return;
+        }
+    }
+
+    ResAccess row;
+
+    row.res = res;
+    row.access = access;
+    arrput(gResAccessAll, row);
+}
+
+static void buildPassResAccess(const Pass *pass, int first)
+{
+    const Srt *srt = &gSrts[pass->srtIdx];
+
+    forEachGroupEntry(passGroupRangePerType(pass, kGroupHeap), gi, k,
+    {
+        if (kAccessNone != entry->realAccess)
+        {
+            resAccessAdd(pass, srt, first, entry->resName, entry->realAccess);
+        }
+    });
+    forEachGroupEntry(passGroupRangePerType(pass, kGroupRoot), gid, k,
+    {
+        if (kAccessNone != entry->realAccess)
+        {
+            resAccessAdd(pass, srt, first, entry->resName, entry->realAccess);
+        }
+    });
+    if (pass->indirect)
+    {
+        forEachGroupEntry(srtGroupRangePerType(srt, kGroupIndirect), gid, j,
+        {
+            resAccessAdd(pass, srt, first, entry->resName, kAccessIndirect);
+        });
+    }
+}
+
+static void buildResAccess(void)
+{
+    arrsetlen(gPassResAccessRange, 0);
+    arrsetlen(gResAccessAll, 0);
+
+    for (size_t i = 0; i < passCount(); ++i)
+    {
+        const Pass    *pass = &gPasses[i];
+        const Srt     *srt = &gSrts[pass->srtIdx];
+        const int      first = (int)arrlen(gResAccessAll);
+
+        buildPassResAccess(pass, first);
+        const int accessCount = (int)arrlen(gResAccessAll) - first;
+
+        if (first > 0xffff)
+        {
+            fail("more than %d resource access row(s) in total", 0xffff);
+            return;
+        }
+        if (accessCount > 0xff)
+        {
+            fail("SRT '%s' pass '%s' accesses %d resource(s), more than a uint8_t count can hold", nameToCStr(srt->key), nameToCStr(pass->name), accessCount);
+            return;
+        }
+        ResAccessRange range;
+
+        range.first = (uint16_t)first;
+        range.count = (uint8_t)accessCount;
+        arrput(gPassResAccessRange, range);
+    }
+}
+
+static void emitBarrierTables(const char *dir)
+{
+    StrBuilder  sb = { NULL };
+    StrBuilder  path = { NULL };
+    const char *guard = "ZSTDGPU_SRT_GENERATED_BARRIER_TABLES_H";
+
+    sb_Fmt(&path, "%s/zstdgpu_srt_barrier_tables.h", dir);
+
+    sb_BeginFile(&sb, guard);
+
+    sb_StrLitEoL(&sb, "#define ZSTDGPU_SRT_RES_LIST()                            \\");
+    for (int i = 0; i < resourceCount(); ++i)
+    {
+        sb_Fmt(&sb, "    ZSTDGPU_SRT_RES(%-*s)%s\n", 36, resourceIdToCStr(i), (i + 1 < resourceCount()) ? " \\" : "");
+    }
+    sb_ExtraLine(&sb);
+
+    sb_StrLitEoL(&sb, "typedef enum zstdgpu_Srt_ResId\n"
+                    "{\n"
+                    "#define ZSTDGPU_SRT_RES(name) kzstdgpu_BarrierTracker_ResId_##name,\n"
+                    "    ZSTDGPU_SRT_RES_LIST()\n"
+                    "#undef ZSTDGPU_SRT_RES\n"
+                    "    kzstdgpu_BarrierTracker_ResId_Count\n"
+                    "} zstdgpu_Srt_ResId;\n");
+
+    sb_StrLitEoL(&sb, "static const uint16_t kzstdgpu_BarrierTracker_ResOfs[kzstdgpu_BarrierTracker_ResId_Count] =\n"
+                    "{\n"
+                    "#define ZSTDGPU_SRT_RES(name) (uint16_t)offsetof(zstdgpu_GpuOnlyBuffers, name),\n"
+                    "    ZSTDGPU_SRT_RES_LIST()\n"
+                    "#undef ZSTDGPU_SRT_RES\n"
+                    "};\n");
+
+    sb_StrLitEoL(&sb, "static const char *const kzstdgpu_BarrierTracker_ResName[kzstdgpu_BarrierTracker_ResId_Count] =\n"
+                    "{\n"
+                    "#define ZSTDGPU_SRT_RES(name) #name,\n"
+                    "    ZSTDGPU_SRT_RES_LIST()\n"
+                    "#undef ZSTDGPU_SRT_RES\n"
+                    "};\n");
+
+    sb_StrLitEoL(&sb,
+        "typedef enum zstdgpu_Srt_Access\n"
+        "{\n"
+        "    kzstdgpu_Srt_Access_ShaderRead = 0,         /**< bound RO                                     */\n"
+        "    kzstdgpu_Srt_Access_ShaderReadWrite = 1,    /**< bound RW or RWGLC -- the only dirtying access */\n"
+        "    kzstdgpu_Srt_Access_ShaderReadNoWrite = 2,  /**< bound RNW: a UAV the shader only reads        */\n"
+        "    kzstdgpu_Srt_Access_IndirectRead = 3,       /**< not bound -- consumed by ExecuteIndirect      */\n"
+        "    kzstdgpu_Srt_Access_ShaderIndirectRead = 4  /**< bound RO and consumed by ExecuteIndirect      */\n"
+        "} zstdgpu_Srt_Access;\n"
+        "\n"
+        "typedef struct zstdgpu_Srt_ResAccess\n"
+        "{\n"
+        "    uint16_t res;\n"
+        "    uint16_t access;\n"
+        "} zstdgpu_Srt_ResAccess;\n"
+        "\n"
+        "/** define the range of resource access in kzstdgpu_Srt_ResAccessAll */\n"
+        "typedef struct zstdgpu_Srt_ResAccessRange\n"
+        "{\n"
+        "    uint16_t first;\n"
+        "    uint8_t  count;\n"
+        "} zstdgpu_Srt_ResAccessRange;\n");
+
+    sb_StrLitEoL(&sb, "/** Per pass lists of resource accesses */");
+    sb_StrLitEoL(&sb, "#define ZSTDGPU_SRT_PASS_LIST()                                                \\");
+    for (size_t i = 0; i < passCount(); ++i)
+    {
+        sb_Fmt(&sb, "    ZSTDGPU_SRT_PASS(%-*s, %4d, %3d)%s\n", 45, nameToCStr(gPasses[i].binderName),
+               (int)gPassResAccessRange[i].first, (int)gPassResAccessRange[i].count, (i + 1 < passCount()) ? " \\" : "");
+    }
+    sb_ExtraLine(&sb);
+
+    sb_StrLitEoL(&sb, "typedef enum zstdgpu_Srt_Pass\n"
+                    "{\n"
+                    "#define ZSTDGPU_SRT_PASS(name, first, count) kzstdgpu_Srt_Pass_##name,\n"
+                    "    ZSTDGPU_SRT_PASS_LIST()\n"
+                    "#undef ZSTDGPU_SRT_PASS\n"
+                    "    kzstdgpu_Srt_Pass_Count\n"
+                    "} zstdgpu_Srt_Pass;\n");
+
+    sb_StrLitEoL(&sb, "/** Report only. */\n"
+                    "static const char *const kzstdgpu_Srt_Pass_Name[kzstdgpu_Srt_Pass_Count] =\n"
+                    "{\n"
+                    "#define ZSTDGPU_SRT_PASS(name, first, count) #name,\n"
+                    "    ZSTDGPU_SRT_PASS_LIST()\n"
+                    "#undef ZSTDGPU_SRT_PASS\n"
+                    "};\n");
+
+    sb_Fmt(&sb, "static const zstdgpu_Srt_ResAccess kzstdgpu_Srt_ResAccessAll[%d] =\n{\n", (int)arrlen(gResAccessAll));
+    for (size_t i = 0; i < passCount(); ++i)
+    {
+        const int firstRow = gPassResAccessRange[i].first;
+        const int rowCount = gPassResAccessRange[i].count;
+
+        sb_Fmt(&sb, "    /* [%3d] %s", firstRow, nameToCStr(gPasses[i].binderName));
+        sb_Fmt(&sb, " -- %d row(s) */\n", rowCount);
+
+        for (int j = 0; j < rowCount; ++j)
+        {
+            const ResAccess row = gResAccessAll[firstRow + j];
+            const char     *res = nameToCStr(row.res);
+            const int       pad = 52 - (int)(sizeof("kzstdgpu_BarrierTracker_ResId_,") - 1 + strlen(res));
+
+            sb_Fmt(&sb, "    { kzstdgpu_BarrierTracker_ResId_%s,%*s %s },\n", res, (pad > 0) ? pad : 0, "", kAccessTokenText[row.access]);
+        }
+    }
+    sb_StrLitEoL(&sb, "};\n");
+
+    sb_StrLitEoL(&sb, "static const zstdgpu_Srt_ResAccessRange kzstdgpu_Srt_Pass_ResAccess[kzstdgpu_Srt_Pass_Count] =\n"
+                    "{\n"
+                    "#define ZSTDGPU_SRT_PASS(name, first, count) { first, count },\n"
+                    "    ZSTDGPU_SRT_PASS_LIST()\n"
+                    "#undef ZSTDGPU_SRT_PASS\n"
+                    "};\n");
+
+    sb_EndFile(&sb, guard, sb_CStr(&path));
+
+    arrfree(path.data);
 }
 
 static void emitBind(const char *dir)
 {
     StrBuilder  sb = { NULL };
-    StrBuilder *b = &sb;
     StrBuilder  path = { NULL };
     const char *guard = "ZSTDGPU_SRT_GENERATED_BIND_H";
-    int         i;
-    int         j;
 
     sb_Fmt(&path, "%s/zstdgpu_srt_bind.h", dir);
 
-    sb_BeginFile(b, guard);
-    sb_StrLitEoL(b, "/** Stable resource ids -- the barrier tracker indexes its state array with these. */\n"
-                    "enum\n"
-                    "{");
+    sb_BeginFile(&sb, guard);
 
-    for (i = 0; i < g_resourceCount; ++i)
+    emitBindGroups(&sb);
+
+    for (size_t i = 0; i < passCount(); ++i)
     {
-        sb_Fmt(b, "    kzstdgpu_SrtRes_%-*s= %d,\n", 36, nameToCStr(g_resources[i]), i);
-    }
-    sb_Fmt(b, "    kzstdgpu_SrtRes_Count%*s= %d\n", 31, "", g_resourceCount);
-    sb_StrLitEoL(b, "};\n");
+        const Pass *pass = &gPasses[i];
+        const Srt  *srt = &gSrts[pass->srtIdx];
+        const int   stage = pass->stage;
 
-    emitBindGroups(b);
+        sb_Fmt(&sb, "static void zstdgpu_Bind_%s", nameToCStr(pass->binderName));
+        /* Barrier lookup needs b even when this binder has no root-resource setters. */
+        sb_StrLit(&sb, "(ID3D12GraphicsCommandList *cmdList, zstdgpu_BarrierTracker *tracker, const zstdgpu_Srts &srts, const zstdgpu_GpuOnlyBuffers &b");
 
-    for (i = 0; i < g_passCount; ++i)
-    {
-        const Pass *pass = &g_passes[i];
-        const Srt  *srt = &g_srts[pass->srtIdx];
-        int         stage;
-
-        for (stage = (0 == srt->groupCount) ? -1 : 0; stage < STAGE_COUNT; ++stage)
+        /* Indirect dispatch supplies its indirect constants through the command signature.
+         * Direct passes take them as explicit parameters. */
+        forEachSrtBoundConst(srt, groupType, gid, idx,
         {
-            if (stage >= 0 && 0 == (srt->stageMask & (1 << stage)))
-                continue;
+            if (pass->indirect == Direct || kGroupConstIndirect != groupType)
+                sb_Fmt(&sb, ", %s %s", nameToCStr(cst->type), nameToCStr(cst->name));
+        });
+        sb_StrLitEoL(&sb, ")\n{");
+        sb_Fmt(&sb, "    zstdgpu_BarrierTracker_Bind(cmdList, tracker, &b, kzstdgpu_Srt_Pass_%s);\n", nameToCStr(pass->binderName));
+        sb_Fmt(&sb, "    d3d12aid_ComputeRsPs_Set(&srts.%s, cmdList);\n", nameToCStr(srt->key));
 
-            sb_Fmt(b, "static void zstdgpu_Bind_%s", nameToCStr(srt->name));
-            if (kNameIdError != pass->name)
+        if (srtGroupRangePerType(srt, kGroupHeap).count > 0)
+        {
+            sb_StrLitEoL(&sb, "    cmdList->SetDescriptorHeaps(1, &srts.heap);");
+            forEachGroupInRange(passGroupRangePerType(pass, kGroupHeap), gid,
             {
-                sb_Fmt(b, "_%s", nameToCStr(pass->name));
-            }
-            if (stage >= 0)
-            {
-                sb_Fmt(b, "_Stage%d", stage);
-            }
-            sb_StrLit(b, "(ID3D12GraphicsCommandList *cmdList, const zstdgpu_Srts &srts, const zstdgpu_GpuOnlyBuffers &");
-            if (srt->rootBufCount > 0)
-                sb_StrLit(b, "b");
+                const char *gname = nameToCStr(group(gid)->name);
+                const char *tableName = nameToCStr(groupTableName(gid));
 
-            for (j = 0; j < srt->boundConstCount; ++j)
-            {
-                const Const *c = &srt->boundConsts[j];
-
-                if (pass->indirect == Direct || kConstIndirect != c->kind)
-                    sb_Fmt(b, ", %s %s", nameToCStr(c->type), nameToCStr(c->name));
-            }
-            sb_StrLitEoL(b, ")\n{");
-            sb_Fmt(b, "    d3d12aid_ComputeRsPs_Set(&srts.%s, cmdList);\n", nameToCStr(srt->name));
-
-            if (srt->groupCount > 0)
-            {
-                sb_StrLitEoL(b, "    cmdList->SetDescriptorHeaps(1, &srts.heap);");
-                for (j = 0; j < srt->groupCount; ++j)
-                {
-                    const Group *g = &g_groups[srt->groupIdx[j]];
-
-                    sb_Fmt(b, "    cmdList->SetComputeRootDescriptorTable(%d /* %s */, srts.stage%d.%s);\n", j, nameToCStr(g->name), stage, nameToCStr(g->name));
-                }
-            }
-
-            for (j = 0; j < srt->rootBufCount; ++j)
-            {
-                const Entry *e = &srt->rootBufs[j];
-
-                sb_Fmt(b, "    cmdList->SetComputeRoot%sView(%d /* %s */,", (kAccessRO == e->access) ? "ShaderResource" : "UnorderedAccess", srt->groupCount + j, nameToCStr(e->name));
-                sb_Fmt(b, " b.%s->GetGPUVirtualAddress());\n", nameToCStr(pass->resources[j]));
-            }
-
-            for (j = 0; j < srt->boundConstCount; ++j)
-            {
-                const Const *c = &srt->boundConsts[j];
-
-                if (pass->indirect == Direct || kConstIndirect != c->kind)
-                    sb_Fmt(b, "    cmdList->SetComputeRoot32BitConstant(%d /* Consts */, %s, %d /* %s */);\n", srtConstsRootSlot(srt), nameToCStr(c->name), j, nameToCStr(c->name));
-            }
-
-            sb_StrLitEoL(b, "}\n");
+                sb_Fmt(&sb, "    cmdList->SetComputeRootDescriptorTable(%d /* %s */, srts.stage%d.%s);\n", srtGroupRootParam(srt, gid), gname, stage, tableName);
+            });
         }
+
+        forEachGroupEntry(passGroupRangePerType(pass, kGroupRoot), gid, k,
+        {
+            const Entry *entryValue = entry;
+            const NameId res = entry->resName;
+            const int    rootParam = srtGroupRootParam(srt, gid) + (int)k;
+
+            if (kAccessNone == entryValue->realAccess)
+            {
+                sb_Fmt(&sb, "    /* root param %d (%s) left unset -- this pass does not access %s */\n", rootParam, nameToCStr(entryValue->bindName), nameToCStr(res));
+                continue;
+            }
+            sb_Fmt(&sb, "    cmdList->SetComputeRoot%sView(%d /* %s */,", (kAccessRO == entryValue->bindAccess) ? "ShaderResource" : "UnorderedAccess", rootParam, nameToCStr(entryValue->bindName));
+            sb_Fmt(&sb, " b.%s->GetGPUVirtualAddress());\n", nameToCStr(res));
+        });
+
+        forEachSrtBoundConst(srt, groupType, owner, inGroup,
+        {
+            if (pass->indirect == Direct || kGroupConstIndirect != groupType)
+            {
+                sb_Fmt(&sb, "    cmdList->SetComputeRoot32BitConstant(%d /* %s */, %s, %d /* %s */);\n", srtGroupRootParam(srt, owner), nameToCStr(group(owner)->name), nameToCStr(cst->name), (int)inGroup, nameToCStr(cst->name));
+            }
+        });
+
+        sb_StrLitEoL(&sb, "}\n");
     }
 
-    sb_EndFile(b, guard, sb_CStr(&path));
+    sb_EndFile(&sb, guard, sb_CStr(&path));
 
     arrfree(path.data);
 }
@@ -1685,11 +3166,18 @@ static void emitBind(const char *dir)
 int main(int argc, char **argv)
 {
     const char *dir = (argc > 1) ? argv[1] : ".generated";
-    int         i;
 
     collect();
     addDefaultPasses();
+    deriveGroupUsage();
+    registerBoundResources();
+    checkSrtStages();
+    alignGroupTextLens();
+    checkIndirectInputs();
+    assignGroupSpaces();
     checkRootBudget();
+    assignTableOwners();
+    buildResAccess();
 
     if (g_errorCount > 0)
     {
@@ -1697,15 +3185,19 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    for (i = 0; i < g_groupCount; ++i)
+    forEachGroup(gid,
     {
-        emitBindGroupHeader(dir, &g_groups[i]);
-    }
-    for (i = 0; i < g_srtCount; ++i)
+        if (!groupIsClone(gid) && groupHasHeader(gid))
+        {
+            emitGroupHeader(dir, gid);
+        }
+    });
+    for (size_t i = 0; i < srtCount(); ++i)
     {
-        emitSrtHeader(dir, i);
+        emitSrtHeader(dir, (int)i);
     }
     emitStructs(dir);
+    emitBarrierTables(dir);
     emitBind(dir);
 
     if (g_errorCount > 0)
@@ -1714,6 +3206,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("[zstdgpu_srt_tool] [INFO] %d bind group(s), %d SRT(s), %d pass(es), %d resource(s) -> %s\n", g_groupCount, g_srtCount, g_passCount, g_resourceCount, dir);
+    {
+        int heapGroups = 0;
+
+        forEachGroup(gid,
+        {
+            heapGroups += (kGroupHeap == groupType && !groupIsClone(gid));
+        });
+        printf("[zstdgpu_srt_tool] [INFO] %d bind group(s), %zu SRT(s), %zu pass(es), %d resource(s) -> %s\n", heapGroups, srtCount(), passCount(), resourceCount(), dir);
+        printf("[zstdgpu_srt_tool] [INFO] %d group(s) total, %d entry declaration(s) interned to %d distinct entry(s), %d constant declaration(s) interned to %d distinct constant(s)\n", (int)hmlen(gGroups), gEntryDeclCount, (int)hmlen(gEntries), gConstDeclCount, (int)hmlen(gConsts));
+    }
     return 0;
 }

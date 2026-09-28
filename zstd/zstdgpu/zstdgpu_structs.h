@@ -432,7 +432,7 @@ static const uint32_t kzstdgpu_TgSizeX_DecompressSequences = 128;
 // TODO(pamartis) Try threadgroup sizes that less than wave size to see whether reducing
 // divergency more efficient than having unfilled waves...
 #if defined(_GAMING_XBOX_XBOXONE) || defined(__XBOX_ONE)
-static const uitn32_t kzstdgpu_TgSizeX_DecompressLiterals = 64;
+static const uint32_t kzstdgpu_TgSizeX_DecompressLiterals = 64;
 #else
 static const uint32_t kzstdgpu_TgSizeX_DecompressLiterals = 32;
 #endif
