@@ -189,6 +189,8 @@ static const int16_t kzstdgpuFseProbsDefault[] =
 #include ".generated/ZstdGpuSrt_InitHuffmanTableAndDecompressLiterals.h"
 #include ".generated/ZstdGpuSrt_DecompressSequences.h"
 #include ".generated/ZstdGpuSrt_FinaliseSequenceOffsets.h"
+#include ".generated/ZstdGpuSrt_ComputeDestBlockOffsets.h"
+#include ".generated/ZstdGpuSrt_ExecuteSequences.h"
 
 #define VALIDATE(name, data) ZSTDGPU_ASSERT(ZSTDGPU_ENUM_CONST(Validate_Success) == zstdgpu_ReferenceStore_Validate_##name(data))
 
@@ -620,7 +622,7 @@ static uint32_t zstdgpu_ExclusivePrefixSumCpu(uint32_t *values, uint32_t count)
  *  @brief  This function executes GPU Decompression pipeline on CPU (by calling shader function on CPU)
  *          to give opportunity to catch errors early
  */
-static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCpu, const void *zstdGpuCompressedData, const zstdgpu_OffsetAndSize *zstdFrameRefs, uint32_t zstdFrameCount, uint32_t zstdCompressedFramesByteCount, uint64_t zstdUncompressedFramesByteCount)
+static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCpu, const void *zstdGpuCompressedData, const zstdgpu_OffsetAndSize *zstdFrameRefs, const zstdgpu_OffsetAndSize *zstdOutputFrameRefs, uint32_t zstdFrameCount, uint32_t zstdCompressedFramesByteCount, uint32_t zstdUncompressedFramesByteCount, const uint8_t *ref, uint32_t refByteCount)
 {
     zstdgpu_ResourceInfo zstdInfo;
     zstdgpu_ResourceInfo_InitZero(&zstdInfo);
@@ -654,7 +656,8 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
         }
     }
     ZSTDGPU_ASSERT(zstdFrameCount == CNTRS(Frames));
-    ZSTDGPU_ASSERT(zstdUncompressedFramesByteCount == CNTRS(Frames_UncompressedByteSize));
+
+    ZSTDGPU_ASSERT(refByteCount == CNTRS(Frames_UncompressedByteSize));
 
     const uint32_t zstdRawBlockCount = CNTRS(Blocks_RAW);
     const uint32_t zstdRleBlockCount = CNTRS(Blocks_RLE);
@@ -739,8 +742,13 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
     }
     const uint32_t literalCount = CNTRS(HUF_Streams_DecodedBytes);
     const uint32_t sequenceCount = CNTRS(Seq_Streams_DecodedItems);
-    zstdgpu_ResourceInfo_Stage_2_Init(&zstdInfo, literalCount, sequenceCount, 0, 0);
+    zstdgpu_ResourceInfo_Stage_2_Init(&zstdInfo, literalCount, sequenceCount, zstdUncompressedFramesByteCount, zstdFrameCount);
     zstdgpu_ResourceDataCpu_InitFromHeap(&zstdCpu, &zstdInfo);
+
+    // NOTE(pamartis): output frame references are external resources, so `InitFromHeap` doesn't allocate them
+    // so we setup reference ones for other passes to read.
+    ZSTDGPU_ASSERT(NULL == zstdCpu.UnCompressedFramesRefs);
+    zstdCpu.UnCompressedFramesRefs = (zstdgpu_OffsetAndSize *)zstdOutputFrameRefs;
 
     {
         zstdgpu_InitFseTable_SRT srt;
@@ -893,6 +901,15 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
             }
         }
     }
+    // CPU equivalent of [Compute Dest Block Offsets]: `BlockSizePrefix` holds the inclusive prefix of block sizes here
+    {
+        zstdgpu_ComputeDestBlockOffsets_SRT srt;
+        zstdgpu_Srt_Fill(srt, zstdCpu, /* tgOffset */0, /* workItemCount */zstdAllBlockCount, zstdFrameCount);
+        for (uint32_t i = 0; i < zstdAllBlockCount; ++i)
+        {
+            zstdgpu_ShaderEntry_ComputeDestBlockOffsets(srt, i);
+        }
+    }
     // CPU-side "finalisation" pass for offsets. Encoded offsets within the block that are either a) refer to "final" offset of the previous block b) absolute with "+3 bytes" offsets,
     // so we "decode" them into "absolute"
     {
@@ -904,7 +921,54 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
         }
     }
     VALIDATE(DecompressedSequences, &zstdCpu);
+
+    // CPU-side final output, into the same frame layout as the GPU output. The buffer is poison-filled
+    // first so that a byte no pass writes shows up as a mismatch against the reference.
+    ZSTDGPU_ASSERT(NULL == zstdCpu.UnCompressedFramesData);
+    zstdCpu.UnCompressedFramesData = (uint8_t *)alloc(zstdUncompressedFramesByteCount);
+    memset(zstdCpu.UnCompressedFramesData, 0xCD, zstdUncompressedFramesByteCount);
+
+    // CPU equivalent of [Memcpy RAW blocks, Memset RLE blocks]
+    for (uint32_t blockIdx = 0; blockIdx < zstdRawBlockCount; ++blockIdx)
+    {
+        const zstdgpu_OffsetAndSize block = zstdCpu.BlocksRAWRefs[blockIdx];
+        const uint32_t dstOffset = zstdCpu.BlockDestOffs[zstdCpu.GlobalBlockIndexPerRawBlock[blockIdx]];
+        ZSTDGPU_ASSERT(dstOffset + block.size <= zstdUncompressedFramesByteCount);
+        memcpy(zstdCpu.UnCompressedFramesData + dstOffset, (const uint8_t *)zstdCpu.CompressedData + block.offs, block.size);
+    }
+    for (uint32_t blockIdx = 0; blockIdx < zstdRleBlockCount; ++blockIdx)
+    {
+        const zstdgpu_OffsetAndSize block = zstdCpu.BlocksRLERefs[blockIdx];
+        const uint32_t dstOffset = zstdCpu.BlockDestOffs[zstdCpu.GlobalBlockIndexPerRleBlock[blockIdx]];
+        ZSTDGPU_ASSERT(dstOffset + block.size <= zstdUncompressedFramesByteCount);
+        memset(zstdCpu.UnCompressedFramesData + dstOffset, (uint8_t)block.offs, block.size);
+    }
+
+    CNTRS(Frames_ExecuteSequences) = 0;
+    {
+        zstdgpu_ExecuteSequences_SRT srt;
+        zstdgpu_Srt_Fill(srt, zstdCpu);
+        for (uint32_t i = 0; i < zstdFrameCount; ++i)
+        {
+            zstdgpu_ShaderEntry_ExecuteSequences(srt);
+        }
+    }
+    ZSTDGPU_ASSERT(CNTRS(Frames_ExecuteSequences) == zstdFrameCount);
+
+    // NOTE: counts are the ones this CPU pipeline already validated against the reference store, not re-read from its output
+    {
+        zstdgpu_CountFramesAndBlocksInfo fbInfo;
+        fbInfo.rawBlockCount   = zstdRawBlockCount;
+        fbInfo.rleBlockCount   = zstdRleBlockCount;
+        fbInfo.cmpBlockCount   = zstdCmpBlockCount;
+        fbInfo.frameCount      = zstdFrameCount;
+        fbInfo.frameByteCount  = zstdUncompressedFramesByteCount;
+
+        const uint32_t failedFrameCount = zstdgpu_Test_DecompressedData(zstdCpu, fbInfo, zstdOutputFrameRefs, zstdCpu.UnCompressedFramesData, zstdUncompressedFramesByteCount, ref, refByteCount, L"CPU");
+        ZSTDGPU_ASSERT_MSG(0 == failedFrameCount, "%u frames decompressed on CPU don't match the reference", failedFrameCount);
+    }
     #undef CNTRS
+    zstdCpu.UnCompressedFramesRefs = NULL;
 }
 
 static void zstdgpu_DefaultUploadCallback(void *zstdCompressedFramesBytes, uint32_t zstdCompressedFramesByteCount, zstdgpu_OffsetAndSize *zstdCompressedFrames, uint32_t zstdCompressedFrameCount, void *uploadUserdata)
@@ -1477,8 +1541,10 @@ static int demoRun(void *demoCtx)
     {
         debugPrint(L"[INFO] Running GPU Decompression code on CPU ('--chk-cpu' option was set).\n");
 
+        ZSTDGPU_ASSERT(fbInfo.frameByteCount == (uint64_t)zstdReferenceUncompressedDataSize);
+
         // NOTE(pamartis): We run GPU Decompression pipeline on CPU to catch possible errors/assert early
-        zstdgpu_Validate_GpuDecompressOnCpu(zstdCpu, zstdData /** intentionally without zstdOffs */, zstdInFrameRefs, fbInfo.frameCount, zstdCompressedFramesMemorySizeInBytes, fbInfo.frameByteCount);
+        zstdgpu_Validate_GpuDecompressOnCpu(zstdCpu, zstdData /** intentionally without zstdOffs */, zstdInFrameRefs, zstdOutFrameRefs, fbInfo.frameCount, zstdCompressedFramesMemorySizeInBytes, zstdUnCompressedFramesMemorySizeInBytes, (const uint8_t *)zstdReferenceUncompressedData, zstdReferenceUncompressedDataSize);
         ctx->zstdCpuInit = true;
 
         if (!simGpu)

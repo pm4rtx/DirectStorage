@@ -2046,7 +2046,15 @@ static void emitFillFromResources(StrBuilder *builder, GroupId gi)
 
     forEachEntryInGroup(gi, i,
     {
-        sb_Fmt(builder, "    srt.%-*s= cpuRes.%s;\n", memberTextLen, nameToCStr(entryText->memberText), nameToCStr(entry->resName));
+        /** a read-only typed view may read a resource stored with a different element type (e.g. `uint32_t` CompressedData read as bytes) */
+        if (kKindTyped == entry->kind && kAccessRO == entry->bindAccess)
+        {
+            sb_Fmt(builder, "    srt.%-*s= (const %s *)cpuRes.%s;\n", memberTextLen, nameToCStr(entryText->memberText), nameToCStr(entry->dataType), nameToCStr(entry->resName));
+        }
+        else
+        {
+            sb_Fmt(builder, "    srt.%-*s= cpuRes.%s;\n", memberTextLen, nameToCStr(entryText->memberText), nameToCStr(entry->resName));
+        }
     });
 }
 
