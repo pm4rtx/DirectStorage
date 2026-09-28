@@ -528,6 +528,18 @@ static uint32_t zstdgpu_Test_DecompressedDataPerBlockType(const uint32_t *gpuGlo
     return failedBlockCount;
 }
 
+static uint32_t zstdgpu_ExclusivePrefixSumCpu(uint32_t *values, uint32_t count)
+{
+    uint32_t prefix = 0;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const uint32_t value = values[i];
+        values[i] = prefix;
+        prefix += value;
+    }
+    return prefix;
+}
+
 /**
  *  @brief  This function executes GPU Decompression pipeline on CPU (by calling shader function on CPU)
  *          to give opportunity to catch errors early
@@ -582,37 +594,10 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
     // NOTE(pamartis):On CPU, lookback regions for PerFrameBlockCount{RAW,RLE,CMP,All} and
     // PerFrameBlockSizes{RAW,RLE} do NOT need zeroing because prefix sums are computed sequentially
     {
-        uint32_t prefix = 0;
-        for (uint32_t i = 0; i < zstdFrameCount; ++i)
-        {
-            uint32_t count = zstdCpu.PerFrameBlockCountRAW[i];
-            zstdCpu.PerFrameBlockCountRAW[i] = prefix;
-            prefix += count;
-        }
-
-        prefix = 0;
-        for (uint32_t i = 0; i < zstdFrameCount; ++i)
-        {
-            uint32_t count = zstdCpu.PerFrameBlockCountRLE[i];
-            zstdCpu.PerFrameBlockCountRLE[i] = prefix;
-            prefix += count;
-        }
-
-        prefix = 0;
-        for (uint32_t i = 0; i < zstdFrameCount; ++i)
-        {
-            uint32_t count = zstdCpu.PerFrameBlockCountCMP[i];
-            zstdCpu.PerFrameBlockCountCMP[i] = prefix;
-            prefix += count;
-        }
-
-        prefix = 0;
-        for (uint32_t i = 0; i < zstdFrameCount; ++i)
-        {
-            uint32_t count = zstdCpu.PerFrameBlockCountAll[i];
-            zstdCpu.PerFrameBlockCountAll[i] = prefix;
-            prefix += count;
-        }
+        zstdgpu_ExclusivePrefixSumCpu(zstdCpu.PerFrameBlockCountRAW, zstdFrameCount);
+        zstdgpu_ExclusivePrefixSumCpu(zstdCpu.PerFrameBlockCountRLE, zstdFrameCount);
+        zstdgpu_ExclusivePrefixSumCpu(zstdCpu.PerFrameBlockCountCMP, zstdFrameCount);
+        zstdgpu_ExclusivePrefixSumCpu(zstdCpu.PerFrameBlockCountAll, zstdFrameCount);
     }
     {
         zstdgpu_ParseFrames_SRT srt = {};
