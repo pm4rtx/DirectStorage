@@ -528,6 +528,82 @@ static uint32_t zstdgpu_Test_DecompressedDataPerBlockType(const uint32_t *gpuGlo
     return failedBlockCount;
 }
 
+static uint32_t zstdgpu_Test_DecompressedData(const zstdgpu_ResourceDataCpu & cpuData,
+                                              const zstdgpu_CountFramesAndBlocksInfo & fbInfo,
+                                              const zstdgpu_OffsetAndSize *tstFrameRefs,
+                                              const uint8_t *tst,
+                                              uint32_t tstByteCount,
+                                              const uint8_t *ref,
+                                              uint32_t refByteCount,
+                                              const wchar_t *sourceName)
+{
+    uint32_t failedFrameCount = 0;
+    {
+        uint32_t offs = 0;
+        for (uint32_t i = 0; i < fbInfo.frameCount; ++i)
+        {
+            const zstdgpu_OffsetAndSize & frame = tstFrameRefs[i];
+            ZSTDGPU_ASSERT(frame.offs + frame.size <= tstByteCount);
+            ZSTDGPU_ASSERT(offs + frame.size <= refByteCount);
+            failedFrameCount += (0 != memcmp(ref + offs, tst + frame.offs, frame.size));
+
+            // NOTE(pamartis): it's important we track offset here because `ref` is contains frames adjacently,
+            // while `tst` could contain alignment gaps between frames
+            offs += frame.size;
+        }
+        ZSTDGPU_ASSERT(offs == refByteCount);
+    }
+
+    if (failedFrameCount > 0)
+    {
+        debugPrint(L"[FAIL] %u/%u frames decompressed on %s failed validation.\n", failedFrameCount, fbInfo.frameCount, sourceName);
+
+        const uint32_t failedRawBlockCount = zstdgpu_Test_DecompressedDataPerBlockType(
+            cpuData.GlobalBlockIndexPerRawBlock,
+            fbInfo.rawBlockCount,
+            cpuData.PerFrameBlockCountAll,
+            tstFrameRefs,
+            fbInfo.frameCount,
+            cpuData.BlockSizePrefix,
+            ref,
+            tst
+        );
+
+        const uint32_t failedRleBlockCount = zstdgpu_Test_DecompressedDataPerBlockType(
+            cpuData.GlobalBlockIndexPerRleBlock,
+            fbInfo.rleBlockCount,
+            cpuData.PerFrameBlockCountAll,
+            tstFrameRefs,
+            fbInfo.frameCount,
+            cpuData.BlockSizePrefix,
+            ref,
+            tst
+        );
+
+        const uint32_t failedCmpBlockCount = zstdgpu_Test_DecompressedDataPerBlockType(
+            cpuData.GlobalBlockIndexPerCmpBlock,
+            fbInfo.cmpBlockCount,
+            cpuData.PerFrameBlockCountAll,
+            tstFrameRefs,
+            fbInfo.frameCount,
+            cpuData.BlockSizePrefix,
+            ref,
+            tst
+        );
+
+        if (failedRawBlockCount > 0 || failedRleBlockCount > 0)
+        {
+            debugPrint(L"[FAIL] %u/%u RAW blocks and %u/%u RLE blocks decompressed on %s failed validation. Likely MemCpy/MemSet pass is broken, unless ExecuteSequence stomps the memory written by MemCpy/MemSet.\n", failedRawBlockCount, fbInfo.rawBlockCount, failedRleBlockCount, fbInfo.rleBlockCount, sourceName);
+        }
+
+        if (failedCmpBlockCount > 0)
+        {
+            debugPrint(L"[FAIL] %u/%u CMP blocks decompressed on %s failed validation. ExecuteSequences is likely broken unless an issue happens earlier in the pipeline (or, on GPU, unless TDR is hit).\n", failedCmpBlockCount, fbInfo.cmpBlockCount, sourceName);
+        }
+    }
+    return failedFrameCount;
+}
+
 static uint32_t zstdgpu_ExclusivePrefixSumCpu(uint32_t *values, uint32_t count)
 {
     uint32_t prefix = 0;
@@ -1664,65 +1740,17 @@ static int demoRun(void *demoCtx)
 
                     if (chkGpu)
                     {
-                        uint32_t failedFrameCount = 0;
-
-                        {
-                            const char *ref = (char*)zstdReferenceUncompressedData;
-                            const char *tst = (char*)zstdUnCompressedFramesMemory.bufMem[0];
-                            for (uint32_t i = 0; i < fbInfo.frameCount; ++i)
-                            {
-                                failedFrameCount += (0 != memcmp(ref, tst + zstdOutFrameRefs[i].offs, zstdOutFrameRefs[i].size));
-
-                                ref += zstdOutFrameRefs[i].size;
-                            }
-                        }
-
+                        // NOTE: frame and block counts come from the CPU pre-scan (`fbInfo`), not from GPU counters
+                        const uint32_t failedFrameCount = zstdgpu_Test_DecompressedData(gpuData,
+                                                                                        fbInfo,
+                                                                                        zstdOutFrameRefs,
+                                                                                        (const uint8_t *)zstdUnCompressedFramesMemory.bufMem[0],
+                                                                                        zstdUnCompressedFramesMemorySizeInBytes,
+                                                                                        (const uint8_t *)zstdReferenceUncompressedData,
+                                                                                        zstdReferenceUncompressedDataSize,
+                                                                                        L"GPU");
                         if (failedFrameCount > 0)
                         {
-                            const char *ref = (char*)zstdReferenceUncompressedData;
-                            const char *tst = (char*)zstdUnCompressedFramesMemory.bufMem[0];
-
-                            debugPrint(L"[FAIL] %u/%u frames failed validation.\n", failedFrameCount, fbInfo.frameCount);
-
-                            const uint32_t failedRawBlockCount = zstdgpu_Test_DecompressedDataPerBlockType(
-                                gpuData.GlobalBlockIndexPerRawBlock,
-                                fbInfo.rawBlockCount,
-                                gpuData.PerFrameBlockCountAll,
-                                zstdOutFrameRefs,
-                                fbInfo.frameCount,
-                                gpuData.BlockSizePrefix,
-                                ref,
-                                tst
-                            );
-
-                            const uint32_t failedRleBlockCount = zstdgpu_Test_DecompressedDataPerBlockType(
-                                gpuData.GlobalBlockIndexPerRleBlock,
-                                fbInfo.rleBlockCount,
-                                gpuData.PerFrameBlockCountAll,
-                                zstdOutFrameRefs,
-                                fbInfo.frameCount,
-                                gpuData.BlockSizePrefix,
-                                ref,
-                                tst
-                            );
-
-                            const uint32_t failedCmpBlockCount = zstdgpu_Test_DecompressedDataPerBlockType(
-                                gpuData.GlobalBlockIndexPerCmpBlock,
-                                fbInfo.cmpBlockCount,
-                                gpuData.PerFrameBlockCountAll,
-                                zstdOutFrameRefs,
-                                fbInfo.frameCount,
-                                gpuData.BlockSizePrefix,
-                                ref,
-                                tst
-                            );
-
-                            if (failedRawBlockCount > 0 || failedRleBlockCount > 0)
-                                debugPrint(L"[FAIL] %u/%u RAW blocks and %u/%u RLE blocks failed validation. Likely MemCpy/MemSet pass is broken, unless ExecuteSequence stomps the memory written by MemCpu/MemSet.\n", failedRawBlockCount, fbInfo.rawBlockCount, failedRleBlockCount, fbInfo.rleBlockCount);
-
-                            if (failedCmpBlockCount > 0)
-                                debugPrint(L"[FAIL] %u/%u CMP blocks failed validation. ExecuteSequences is likely broken unless an issue happens earlier in the pipeline or unless TDR is hit.\n", failedCmpBlockCount, fbInfo.cmpBlockCount);
-
                             ctx->retv = 1;
                             return 0;
                         }
