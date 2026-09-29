@@ -399,15 +399,12 @@ static inline void zstdgpu_ParseFrameHeader(ZSTDGPU_PARAM_INOUT(uint64_t) window
 }
 
 static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_FrameInfo) outFrameInfo,
-                                                  ZSTDGPU_RW_BUFFER(zstdgpu_OffsetAndSize) outBlocksRAWRefs,
-                                                  ZSTDGPU_RW_BUFFER(zstdgpu_OffsetAndSize) outBlocksRLERefs,
+                                                  ZSTDGPU_RW_BUFFER(zstdgpu_OffsetAndSize) outBlocksUncRefs,
                                                   ZSTDGPU_RW_BUFFER(zstdgpu_OffsetAndSize) outBlocksCMPRefs,
                                                   ZSTDGPU_RW_BUFFER(uint32_t) outPerBlockUncompressedSize,
-                                                  ZSTDGPU_RW_BUFFER(uint32_t) outGlobalBlockIndexPerRawBlock,
-                                                  ZSTDGPU_RW_BUFFER(uint32_t) outGlobalBlockIndexPerRleBlock,
+                                                  ZSTDGPU_RW_BUFFER(uint32_t) outGlobalBlockIndexPerUncBlock,
                                                   ZSTDGPU_RW_BUFFER(uint32_t) outGlobalBlockIndexPerCmpBlock,
-                                                  ZSTDGPU_RW_BUFFER(uint32_t) outRawBlockSizes,
-                                                  ZSTDGPU_RW_BUFFER(uint32_t) outRleBlockSizes,
+                                                  ZSTDGPU_RW_BUFFER(uint32_t) outUncBlockSizes,
                                                   ZSTDGPU_PARAM_INOUT(zstdgpu_Forward_BitBuffer) bits,
                                                   uint32_t outputBlockInfo)
 {
@@ -442,7 +439,7 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
         const bool isRaw = 0 == blockType;
         const bool isRle = 1 == blockType;
         const bool isCmp = 2 == blockType;
-
+        const bool isUnc = isRaw || isRle;
         uint32_t blockOffs = 0;
         if (isRle)
         {
@@ -456,28 +453,21 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
 
         if (0 != outputBlockInfo)
         {
-            const uint32_t blockIndex = outFrameInfo.rawBlockStart
-                                      + outFrameInfo.rleBlockStart
+            const uint32_t blockIndex = outFrameInfo.uncBlockStart
                                       + outFrameInfo.cmpBlockStart;
 
             // NOTE(pamartis): Without branch, there's out-of-bounds access detected by validation layer when outBlock{Type}Refs aren't bound
             // so, it's either DXC or IHV compiler not preserving branches with memory accesses.
-            ZSTDGPU_BRANCH if (isRaw)
+            ZSTDGPU_BRANCH if (isUnc)
             {
-                outBlocksRAWRefs[outFrameInfo.rawBlockStart].offs = blockOffs;
-                outBlocksRAWRefs[outFrameInfo.rawBlockStart].size = blockSize;
 
-                outRawBlockSizes[outFrameInfo.rawBlockStart] = blockSize;
-                outGlobalBlockIndexPerRawBlock[outFrameInfo.rawBlockStart] = blockIndex;
-            }
+                outBlocksUncRefs[outFrameInfo.uncBlockStart].offs = blockOffs;
+                outBlocksUncRefs[outFrameInfo.uncBlockStart].size = isRaw ? zstdgpu_EncodeRawLitTypeIntoLitSize(blockSize)
+                                                                          : zstdgpu_EncodeRleLitTypeIntoLitSize(blockSize);
 
-            ZSTDGPU_BRANCH if (isRle)
-            {
-                outBlocksRLERefs[outFrameInfo.rleBlockStart].offs = blockOffs;
-                outBlocksRLERefs[outFrameInfo.rleBlockStart].size = blockSize;
+                outUncBlockSizes[outFrameInfo.uncBlockStart] = blockSize;
+                outGlobalBlockIndexPerUncBlock[outFrameInfo.uncBlockStart] = blockIndex;
 
-                outRleBlockSizes[outFrameInfo.rleBlockStart] = blockSize;
-                outGlobalBlockIndexPerRleBlock[outFrameInfo.rleBlockStart] = blockIndex;
             }
 
             ZSTDGPU_BRANCH if (isCmp)
@@ -492,18 +482,15 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
         }
 
         // `Raw_Block` - this is an uncompressed block. `Block_Content` contains `Block_Size` bytes.
-        outFrameInfo.rawBlockStart += (isRaw) ? 1 : 0;
-
         // `RLE_Block` - this is a single byte, repeated `Block_Size` times. `Block_Content` consists of a single byte.
         // On the decompression side, this byte must be repeated `Block_Size` times.
-        outFrameInfo.rleBlockStart += (isRle) ? 1 : 0;
+        outFrameInfo.uncBlockStart += (isUnc) ? 1 : 0;
 
         // `Compressed_Block` - this is a Zstandard compressed block. `Block_Size` is the length of `Block_Content`, the compressed data.
         // The decompressed size is not known, but its maximum possible value is guaranteed (see below).
         outFrameInfo.cmpBlockStart += (isCmp) ? 1 : 0;
 
-        outFrameInfo.rawBlockBytesStart += (isRaw) ? blockSize : 0;
-        outFrameInfo.rleBlockBytesStart += (isRle) ? blockSize : 0;
+        outFrameInfo.uncBlockBytesStart += (isUnc) ? blockSize : 0;
     }
     while (0 == lastBlock);
 
@@ -537,59 +524,47 @@ static inline void zstdgpu_ShaderEntry_ParseFrames(ZSTDGPU_PARAM_INOUT(zstdgpu_P
 
             if (srt.countBlocksOnly > 0)
             {
-                frameInfo.rawBlockStart = 0;
-                frameInfo.rleBlockStart = 0;
+                frameInfo.uncBlockStart = 0;
                 frameInfo.cmpBlockStart = 0;
-                frameInfo.rawBlockBytesStart = 0;
-                frameInfo.rleBlockBytesStart = 0;
+                frameInfo.uncBlockBytesStart = 0;
             }
             else
             {
-                frameInfo.rawBlockStart = srt.inoutPerFrameBlockCountRAW[threadId];
-                frameInfo.rleBlockStart = srt.inoutPerFrameBlockCountRLE[threadId];
+                frameInfo.uncBlockStart = srt.inoutPerFrameBlockCountUnc[threadId];
                 frameInfo.cmpBlockStart = srt.inoutPerFrameBlockCountCMP[threadId];
             }
 
             zstdgpu_ShaderEntry_ParseFrame(
                 frameInfo,
-                srt.inoutBlocksRAWRefs,
-                srt.inoutBlocksRLERefs,
+                srt.inoutBlocksUncRefs,
                 srt.inoutBlocksCMPRefs,
                 srt.inoutBlockSizePrefix,
-                srt.inoutGlobalBlockIndexPerRawBlock,
-                srt.inoutGlobalBlockIndexPerRleBlock,
+                srt.inoutGlobalBlockIndexPerUncBlock,
                 srt.inoutGlobalBlockIndexPerCmpBlock,
-                srt.inoutRawBlockSizePrefix,
-                srt.inoutRleBlockSizePrefix,
+                srt.inoutUncBlockSizePrefix,
                 bits,
                 srt.countBlocksOnly > 0 ? 0u : 1u
             );
 
             if (srt.countBlocksOnly > 0)
             {
-                srt.inoutPerFrameBlockCountRAW[threadId] = frameInfo.rawBlockStart;
-                srt.inoutPerFrameBlockCountRLE[threadId] = frameInfo.rleBlockStart;
+                srt.inoutPerFrameBlockCountUnc[threadId] = frameInfo.uncBlockStart;
                 srt.inoutPerFrameBlockCountCMP[threadId] = frameInfo.cmpBlockStart;
-                srt.inoutPerFrameBlockCountAll[threadId] = frameInfo.rawBlockStart
-                                                         + frameInfo.rleBlockStart
+                srt.inoutPerFrameBlockCountAll[threadId] = frameInfo.uncBlockStart
                                                          + frameInfo.cmpBlockStart;
 
-                const uint32_t rawBlockCount = WaveActiveSum(frameInfo.rawBlockStart);
-                const uint32_t rleBlockCount = WaveActiveSum(frameInfo.rleBlockStart);
+                const uint32_t uncBlockCount = WaveActiveSum(frameInfo.uncBlockStart);
                 const uint32_t cmpBlockCount = WaveActiveSum(frameInfo.cmpBlockStart);
-                const uint32_t rawBlockByteCount = WaveActiveSum(frameInfo.rawBlockBytesStart);
-                const uint32_t rleBlockByteCount = WaveActiveSum(frameInfo.rleBlockBytesStart);
+                const uint32_t uncBlockByteCount = WaveActiveSum(frameInfo.uncBlockBytesStart);
 
                 const uint32_t uncompSize = (uint32_t)WaveActiveSum(frameInfo.uncompSize);
                 const uint32_t frameCount = WaveActiveCountBits(true);
 
                 if (WaveIsFirstLane())
                 {
-                    InterlockedAdd(srt.inoutCounters[0].Blocks_RAW, rawBlockCount);
-                    InterlockedAdd(srt.inoutCounters[0].Blocks_RLE, rleBlockCount);
+                    InterlockedAdd(srt.inoutCounters[0].Blocks_UNC, uncBlockCount);
                     InterlockedAdd(srt.inoutCounters[0].Blocks_CMP, cmpBlockCount);
-                    InterlockedAdd(srt.inoutCounters[0].BlocksBytes_RAW, rawBlockByteCount);
-                    InterlockedAdd(srt.inoutCounters[0].BlocksBytes_RLE, rleBlockByteCount);
+                    InterlockedAdd(srt.inoutCounters[0].BlocksBytes_UNC, uncBlockByteCount);
                     InterlockedAdd(srt.inoutCounters[0].Frames, frameCount);
                     InterlockedAdd(srt.inoutCounters[0].Frames_UncompressedByteSize, uncompSize);
                 }
@@ -623,11 +598,9 @@ static void zstdgpu_ShaderEntry_InitResources(ZSTDGPU_PARAM_INOUT(zstdgpu_InitRe
             srt.inoutCounters[0].HufLit                                      = 0;
             srt.inoutCounters[0].RAW_Streams                                 = 0;
             srt.inoutCounters[0].RLE_Streams                                 = 0;
-            srt.inoutCounters[0].Blocks_RAW                                  = 0;
-            srt.inoutCounters[0].Blocks_RLE                                  = 0;
+            srt.inoutCounters[0].Blocks_UNC                                  = 0;
             srt.inoutCounters[0].Blocks_CMP                                  = 0;
-            srt.inoutCounters[0].BlocksBytes_RAW                             = 0;
-            srt.inoutCounters[0].BlocksBytes_RLE                             = 0;
+            srt.inoutCounters[0].BlocksBytes_UNC                             = 0;
             srt.inoutCounters[0].Frames                                      = 0;
             srt.inoutCounters[0].Frames_UncompressedByteSize                 = 0;
             srt.inoutCounters[0].Frames_ExecuteSequences                     = 0;

@@ -31,33 +31,27 @@ void main()
     {
         // Block-count dependent slots (valid after Stage 0 ParseFrames :: Count Blocks)
         const uint32_t cmpBlockCount = srt.inoutCounters[0].Blocks_CMP;
-        const uint32_t rawBlockCount = srt.inoutCounters[0].Blocks_RAW;
-        const uint32_t rleBlockCount = srt.inoutCounters[0].Blocks_RLE;
-        const uint32_t allBlockCount = rawBlockCount
-                                     + rleBlockCount
+        const uint32_t uncBlockCount = srt.inoutCounters[0].Blocks_UNC;
+        const uint32_t allBlockCount = uncBlockCount
                                      + cmpBlockCount;
 
 
         // the arguments dependent on block counts/sizes -- these could be computed after ParseFrames
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_ComputePrefixSum,         cmpBlockCount,                            kzstdgpu_TgSizeX_PrefixSum_LiteralCount);
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_PrefixBlockSizesAll,      allBlockCount,                            kzstdgpu_TgSizeX_PrefixSum);
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_PrefixBlockSizesRLE,      rleBlockCount,                            kzstdgpu_TgSizeX_PrefixSum);
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_PrefixBlockSizesRAW,      rawBlockCount,                            kzstdgpu_TgSizeX_PrefixSum);
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_MemcpyRAW,                srt.inoutCounters[0].BlocksBytes_RAW,          kzstdgpu_TgSizeX_MemsetMemcpy);
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_MemsetRLE,                srt.inoutCounters[0].BlocksBytes_RLE,          kzstdgpu_TgSizeX_MemsetMemcpy);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_PrefixBlockSizesUnc,      uncBlockCount,                            kzstdgpu_TgSizeX_PrefixSum);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_MemsetMemcpy,             srt.inoutCounters[0].BlocksBytes_UNC,     kzstdgpu_TgSizeX_MemsetMemcpy);
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_ParseCompressedBlocks,    cmpBlockCount,                            kzstdgpu_TgSizeX_ParseCompressedBlocks);
 
         // Memset dispatch slots for InitResources Stage 1
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_Memset_RawBlockLookback,    zstdgpu_GetLookbackBlockCount(rawBlockCount),                    kzstdgpu_TgSizeX_Memset);
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_Memset_RleBlockLookback,    zstdgpu_GetLookbackBlockCount(rleBlockCount),                    kzstdgpu_TgSizeX_Memset);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_Memset_UncBlockLookback,    zstdgpu_GetLookbackBlockCount(uncBlockCount),                    kzstdgpu_TgSizeX_Memset);
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_Memset_CmpBlockLookback,    zstdgpu_GetLookbackBlockCount(cmpBlockCount),                    kzstdgpu_TgSizeX_Memset);
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_Memset_AllBlockLookback,    zstdgpu_GetLookbackBlockCount(allBlockCount),                    kzstdgpu_TgSizeX_Memset);
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_Memset_CmpBlockCount,       cmpBlockCount,                                                   kzstdgpu_TgSizeX_Memset);
 
         const uint32_t predicateMask = 0
                                      | (cmpBlockCount > srt.cmpBlockCountMax ? (1u << 0u) : 0u)
-                                     | (rawBlockCount > srt.rawBlockCountMax ? (1u << 1u) : 0u)
-                                     | (rleBlockCount > srt.rleBlockCountMax ? (1u << 2u) : 0u);
+                                     | (uncBlockCount > srt.uncBlockCountMax ? (1u << 1u) : 0u);
 
         srt.inoutPredicate[0] = predicateMask; // lower 32-bits of Stage 1 predicate
         srt.inoutPredicate[2] = predicateMask; // lower 32-bits of Stage 2 predicate

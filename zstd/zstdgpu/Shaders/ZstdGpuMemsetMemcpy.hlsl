@@ -33,23 +33,22 @@ void main(uint2 groupId : SV_GroupId, uint i : SV_GroupThreadId)
         return;
     }
 
-    const uint32_t blockCnt = (srt.flags & 0x1u) ? srt.inCounters[0].Blocks_RAW : srt.inCounters[0].Blocks_RLE;
-    const uint32_t blockIdx = zstdgpu_BinarySearch(srt.inBlockSizePrefixTyped, 0, blockCnt, i);
+    const uint32_t blockIdx = zstdgpu_BinarySearch(srt.inUncBlockSizePrefix, 0, srt.inCounters[0].Blocks_UNC, i);
 
-    const zstdgpu_OffsetAndSize blockRef = srt.inBlocksRefsTyped[blockIdx];
+    const zstdgpu_OffsetAndSize blockRef = srt.inBlocksUncRefs[blockIdx];
 
-    const uint32_t byteIdx = i - srt.inBlockSizePrefixTyped[blockIdx];
+    const uint32_t byteIdx = i - srt.inUncBlockSizePrefix[blockIdx];
 
-    const uint32_t globalBlockIdx = srt.inGlobalBlockIndexTyped[blockIdx];
+    const uint32_t globalBlockIdx = srt.inGlobalBlockIndexPerUncBlock[blockIdx];
 
     const uint32_t dstBlockOffset = srt.inBlockDestOffs[globalBlockIdx];
 
-    if (byteIdx >= blockRef.size)
+    if (byteIdx >= zstdgpu_DecodeLitSize(blockRef.size))
     {
         return;
     }
 
-    [branch] if (srt.flags & 0x1u)
+    [branch] if (zstdgpu_IsLitTypeRaw(zstdgpu_DecodeLitType(blockRef.size)))
     {
         const uint32_t byteOfs = blockRef.offs + byteIdx;
 
