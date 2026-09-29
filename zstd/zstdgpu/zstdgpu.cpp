@@ -365,7 +365,6 @@ static inline void zstdgpu_ParseFrame(zstdgpu_FrameInfo *outFrameInfo,
                 outBlocksUncRefs[outFrameInfo->uncBlockStart].size = zstdgpu_EncodeRawLitTypeIntoLitSize(blockSize);
             }
             outFrameInfo->uncBlockStart += 1;
-            outFrameInfo->uncBlockBytesStart += blockSize;
 
             zstdgpu_Forward_BitBuffer_Skip(bits, blockSize);
         }
@@ -383,7 +382,6 @@ static inline void zstdgpu_ParseFrame(zstdgpu_FrameInfo *outFrameInfo,
                 zstdgpu_Forward_BitBuffer_Skip(bits, 1);
             }
             outFrameInfo->uncBlockStart += 1;
-            outFrameInfo->uncBlockBytesStart += blockSize;
         }
         else
         {
@@ -473,14 +471,12 @@ void zstdgpu_CollectFrames(zstdgpu_OffsetAndSize *outFrames, zstdgpu_FrameInfo *
             // store prefix
             outFrameInfos[frameId].uncBlockStart      = frameInfo.uncBlockStart;
             outFrameInfos[frameId].cmpBlockStart      = frameInfo.cmpBlockStart;
-            outFrameInfos[frameId].uncBlockBytesStart = frameInfo.uncBlockBytesStart;
 
             frameInfo.windowSize         = 0;
             frameInfo.uncompSize         = 0;
             frameInfo.dictionary         = 0;
             frameInfo.uncBlockStart      = 0;
             frameInfo.cmpBlockStart      = 0;
-            frameInfo.uncBlockBytesStart = 0;
             zstdgpu_ParseFrame(&frameInfo, NULL, NULL, NULL, bits);
 
             // store just retrieved data
@@ -494,7 +490,6 @@ void zstdgpu_CollectFrames(zstdgpu_OffsetAndSize *outFrames, zstdgpu_FrameInfo *
             // accumulate previous prefix onto current frame's block counts
             frameInfo.uncBlockStart      += outFrameInfos[frameId].uncBlockStart;
             frameInfo.cmpBlockStart      += outFrameInfos[frameId].cmpBlockStart;
-            frameInfo.uncBlockBytesStart += outFrameInfos[frameId].uncBlockBytesStart;
         }
         else
         {
@@ -710,7 +705,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_KERNEL_SCOPE_X(InitResources                        , L"Init Resources"             )   \
     ZSTDGPU_KERNEL_SCOPE_X(ParseFrames                          , L"Parse Frames"               )   \
     ZSTDGPU_KERNEL_SCOPE_X(ParseCompressedBlocks                , L"Parse Compressed Blocks"    )   \
-    ZSTDGPU_KERNEL_SCOPE_X(PrefixUncBlockSizes                  , L"Prefix Unc Block Sizes"     )   \
+    ZSTDGPU_KERNEL_SCOPE_X(PrefixUncBlockCopyGroups             , L"Prefix Unc Block Copy Groups")  \
     ZSTDGPU_KERNEL_SCOPE_X(PropagateFseIndex                    , L"Propagate FSE Index"        )   \
     ZSTDGPU_KERNEL_SCOPE_X(UpdateDispatchArgs_Stage1            , L"UpdateDispatchArgs:: Stage1")
 
@@ -2278,7 +2273,7 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Init Resources :: Stage 1]");
         zstdgpu_BarrierTracker_FutureAccess(tracker, &req->resData.gpuOnly,
             kzstdgpu_Srt_Pass_InitResources_FseElems,
-            kzstdgpu_Srt_Pass_Memset_UncBlockSizePrefixLookback,
+            kzstdgpu_Srt_Pass_Memset_UncBlockToCopyGroupPrfxLookback,
             kzstdgpu_Srt_Pass_Memset_LitGroupEndPerHuffmanTableLookback,
             kzstdgpu_Srt_Pass_Memset_PerSeqStreamFinalOffset1Lookback,
             kzstdgpu_Srt_Pass_Memset_PerSeqStreamFinalOffset2Lookback,
@@ -2305,9 +2300,8 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
 
         // Group 1: UncBlockLookback-sized region
-        zstdgpu_Bind_Memset_UncBlockSizePrefixLookback(cmdList, tracker, req->srts, req->resData.gpuOnly, /* memset value */0);
+        zstdgpu_Bind_Memset_UncBlockToCopyGroupPrfxLookback(cmdList, tracker, req->srts, req->resData.gpuOnly, /* memset value */0);
         zstdgpu_DispatchIndirect(cmdList, Memset, Memset_UncBlockLookback);
-
 
         // Group 2: CmpBlockLookback-sized regions (6 UAV rebinds, same dispatch slot)
         zstdgpu_Bind_Memset_LitGroupEndPerHuffmanTableLookback(cmdList, tracker, req->srts, req->resData.gpuOnly, /* memset value */0);
@@ -2362,10 +2356,10 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXEndEvent(cmdList);
     }
     {
-        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier with Resources for [Parse Compressed Blocks] and [Memcpy/Memset UNC blocks]");
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier with Resources for [Parse Compressed Blocks] and [Prefix Unc Block Copy Groups]");
         zstdgpu_BarrierTracker_FutureAccess(tracker, &req->resData.gpuOnly,
             kzstdgpu_Srt_Pass_ParseCompressedBlocks,
-            kzstdgpu_Srt_Pass_PrefixSum_BlockSizesUnc);
+            kzstdgpu_Srt_Pass_PrefixSum_UncBlockCopyGroups);
         PIXEndEvent(cmdList);
     }
 
@@ -2381,12 +2375,12 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     }
 
     {
-        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Prefix Unc Block Sizes]");
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Prefix Unc Block Copy Groups]");
 
         // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
-        ZSTDGPU_KERNEL_SCOPE(PrefixUncBlockSizes, cmdList,
-            zstdgpu_Bind_PrefixSum_BlockSizesUnc(cmdList, tracker, req->srts, req->resData.gpuOnly, /* outputInclusive */0);
-            zstdgpu_DispatchIndirect(cmdList, PrefixSum, PrefixBlockSizesUnc);
+        ZSTDGPU_KERNEL_SCOPE(PrefixUncBlockCopyGroups, cmdList,
+            zstdgpu_Bind_PrefixSum_UncBlockCopyGroups(cmdList, tracker, req->srts, req->resData.gpuOnly, /* outputInclusive */0);
+            zstdgpu_DispatchIndirect(cmdList, PrefixSum, PrefixUncBlockCopyGroups);
         );
 
         PIXEndEvent(cmdList);
@@ -2794,7 +2788,7 @@ ZSTDGPU_API void zstdgpu_ReadbackGpuResults(zstdgpu_PerRequestContext req, ID3D1
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, PerSeqStreamSeqStart, ShaderCopyRead);
 
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, GlobalBlockIndexPerUncBlock, ShaderCopyRead);
-        zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, UncBlockSizePrefix, ShaderCopyRead);
+        zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, UncBlockToCopyGroupPrfx, ShaderCopyRead);
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, BlocksUncRefs, ShaderCopyRead);
 
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, HufWIdToHufLitId, ShaderCopyRead);

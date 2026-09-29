@@ -404,7 +404,7 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
                                                   ZSTDGPU_RW_BUFFER(uint32_t) outPerBlockUncompressedSize,
                                                   ZSTDGPU_RW_BUFFER(uint32_t) outGlobalBlockIndexPerUncBlock,
                                                   ZSTDGPU_RW_BUFFER(uint32_t) outGlobalBlockIndexPerCmpBlock,
-                                                  ZSTDGPU_RW_BUFFER(uint32_t) outUncBlockSizes,
+                                                  ZSTDGPU_RW_BUFFER(uint32_t) outUncBlockToCopyGroupPrfx,
                                                   ZSTDGPU_PARAM_INOUT(zstdgpu_Forward_BitBuffer) bits,
                                                   uint32_t outputBlockInfo)
 {
@@ -451,6 +451,8 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
             zstdgpu_Forward_BitBuffer_Skip(bits, blockSize);
         }
 
+        const uint32_t uncBlockCopyGroupCount = ZSTDGPU_TG_COUNT(blockSize, kzstdgpu_CopyBlockBytes_BytesPerTGroup);
+
         if (0 != outputBlockInfo)
         {
             const uint32_t blockIndex = outFrameInfo.uncBlockStart
@@ -460,14 +462,12 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
             // so, it's either DXC or IHV compiler not preserving branches with memory accesses.
             ZSTDGPU_BRANCH if (isUnc)
             {
-
                 outBlocksUncRefs[outFrameInfo.uncBlockStart].offs = blockOffs;
                 outBlocksUncRefs[outFrameInfo.uncBlockStart].size = isRaw ? zstdgpu_EncodeRawLitTypeIntoLitSize(blockSize)
                                                                           : zstdgpu_EncodeRleLitTypeIntoLitSize(blockSize);
 
-                outUncBlockSizes[outFrameInfo.uncBlockStart] = blockSize;
                 outGlobalBlockIndexPerUncBlock[outFrameInfo.uncBlockStart] = blockIndex;
-
+                outUncBlockToCopyGroupPrfx[outFrameInfo.uncBlockStart] = uncBlockCopyGroupCount;
             }
 
             ZSTDGPU_BRANCH if (isCmp)
@@ -490,7 +490,7 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
         // The decompressed size is not known, but its maximum possible value is guaranteed (see below).
         outFrameInfo.cmpBlockStart += (isCmp) ? 1 : 0;
 
-        outFrameInfo.uncBlockBytesStart += (isUnc) ? blockSize : 0;
+        outFrameInfo.uncBlockCopyGroupStart += (isUnc) ? uncBlockCopyGroupCount : 0;
     }
     while (0 == lastBlock);
 
@@ -526,12 +526,13 @@ static inline void zstdgpu_ShaderEntry_ParseFrames(ZSTDGPU_PARAM_INOUT(zstdgpu_P
             {
                 frameInfo.uncBlockStart = 0;
                 frameInfo.cmpBlockStart = 0;
-                frameInfo.uncBlockBytesStart = 0;
+                frameInfo.uncBlockCopyGroupStart = 0;
             }
             else
             {
                 frameInfo.uncBlockStart = srt.inoutPerFrameBlockCountUnc[threadId];
                 frameInfo.cmpBlockStart = srt.inoutPerFrameBlockCountCMP[threadId];
+                frameInfo.uncBlockCopyGroupStart = 0;
             }
 
             zstdgpu_ShaderEntry_ParseFrame(
@@ -541,7 +542,7 @@ static inline void zstdgpu_ShaderEntry_ParseFrames(ZSTDGPU_PARAM_INOUT(zstdgpu_P
                 srt.inoutBlockSizePrefix,
                 srt.inoutGlobalBlockIndexPerUncBlock,
                 srt.inoutGlobalBlockIndexPerCmpBlock,
-                srt.inoutUncBlockSizePrefix,
+                srt.inoutUncBlockToCopyGroupPrfx,
                 bits,
                 srt.countBlocksOnly > 0 ? 0u : 1u
             );
@@ -555,7 +556,7 @@ static inline void zstdgpu_ShaderEntry_ParseFrames(ZSTDGPU_PARAM_INOUT(zstdgpu_P
 
                 const uint32_t uncBlockCount = WaveActiveSum(frameInfo.uncBlockStart);
                 const uint32_t cmpBlockCount = WaveActiveSum(frameInfo.cmpBlockStart);
-                const uint32_t uncBlockByteCount = WaveActiveSum(frameInfo.uncBlockBytesStart);
+                const uint32_t uncBlockCopyGroupCount = WaveActiveSum(frameInfo.uncBlockCopyGroupStart);
 
                 const uint32_t uncompSize = (uint32_t)WaveActiveSum(frameInfo.uncompSize);
                 const uint32_t frameCount = WaveActiveCountBits(true);
@@ -564,7 +565,7 @@ static inline void zstdgpu_ShaderEntry_ParseFrames(ZSTDGPU_PARAM_INOUT(zstdgpu_P
                 {
                     InterlockedAdd(srt.inoutCounters[0].Blocks_UNC, uncBlockCount);
                     InterlockedAdd(srt.inoutCounters[0].Blocks_CMP, cmpBlockCount);
-                    InterlockedAdd(srt.inoutCounters[0].BlocksBytes_UNC, uncBlockByteCount);
+                    InterlockedAdd(srt.inoutCounters[0].BlocksGroups_Unc, uncBlockCopyGroupCount);
                     InterlockedAdd(srt.inoutCounters[0].Frames, frameCount);
                     InterlockedAdd(srt.inoutCounters[0].Frames_UncompressedByteSize, uncompSize);
                 }
@@ -600,7 +601,7 @@ static void zstdgpu_ShaderEntry_InitResources(ZSTDGPU_PARAM_INOUT(zstdgpu_InitRe
             srt.inoutCounters[0].RLE_Streams                                 = 0;
             srt.inoutCounters[0].Blocks_UNC                                  = 0;
             srt.inoutCounters[0].Blocks_CMP                                  = 0;
-            srt.inoutCounters[0].BlocksBytes_UNC                             = 0;
+            srt.inoutCounters[0].BlocksGroups_Unc                            = 0;
             srt.inoutCounters[0].Frames                                      = 0;
             srt.inoutCounters[0].Frames_UncompressedByteSize                 = 0;
             srt.inoutCounters[0].Frames_ExecuteSequences                     = 0;

@@ -69,7 +69,7 @@
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset3      )   \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamSeqStart          )   \
     \
-    ZSTDGPU_BUFFER(uint32_t                                 , UncBlockSizePrefix            )   \
+    ZSTDGPU_BUFFER(uint32_t                                 , UncBlockToCopyGroupPrfx       )   \
     \
     ZSTDGPU_BUFFER(int16_t                                  , FseProbs                      )   \
     ZSTDGPU_BUFFER(zstdgpu_FseInfo                          , FseInfos                      )   \
@@ -109,7 +109,7 @@
     ZSTDGPU_BUFFER(uint32_t                                 , HuffmanTableRankIndex         )   \
     ZSTDGPU_BUFFER(uint32_t                                 , HuffmanTableInfo              )   \
     ZSTDGPU_BUFFER(uint32_t                                 , BlockSizePrefixLookback       )   \
-    ZSTDGPU_BUFFER(uint32_t                                 , UncBlockSizePrefixLookback    )   \
+    ZSTDGPU_BUFFER(uint32_t                                 , UncBlockToCopyGroupPrfxLookback)  \
     ZSTDGPU_BUFFER(uint32_t                                 , LitGroupEndPerHuffmanTableLookback) \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset1Lookback)  \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset2Lookback)  \
@@ -293,8 +293,8 @@ static void zstdgpu_ResourceInfo_Stage_1_InitSize(zstdgpu_ResourceInfo *outInfo,
     const uint32_t BlocksCMPRefs_Count = cmpBlockCount;
     const uint32_t allBlockCount = uncBlockCount + cmpBlockCount;
 
-    const uint32_t UncBlockSizePrefix_Count = uncBlockCount;
-    const uint32_t UncBlockSizePrefixLookback_Count = zstdgpu_GetLookbackBlockCount(uncBlockCount);
+    const uint32_t UncBlockToCopyGroupPrfx_Count = uncBlockCount;
+    const uint32_t UncBlockToCopyGroupPrfxLookback_Count = zstdgpu_GetLookbackBlockCount(uncBlockCount);
 
     // TODO: this must a total of all blocks (including RLE and RAW)
     const uint32_t BlockSizePrefix_Count = allBlockCount;

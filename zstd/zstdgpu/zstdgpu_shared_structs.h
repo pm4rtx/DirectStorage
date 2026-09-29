@@ -27,5 +27,5 @@ struct zstdgpu_FrameInfo
     uint32_t uncBlockStart;
     uint32_t cmpBlockStart;
 
-    uint32_t uncBlockBytesStart;
+    uint32_t uncBlockCopyGroupStart;
 };

@@ -305,7 +305,7 @@ typedef struct zstdgpu_Counters
     uint32_t RLE_Streams;
     uint32_t Blocks_UNC;
     uint32_t Blocks_CMP;
-    uint32_t BlocksBytes_UNC;
+    uint32_t BlocksGroups_Unc;
     uint32_t Frames;
     uint32_t Frames_UncompressedByteSize;
     uint32_t Frames_ExecuteSequences;
@@ -324,7 +324,7 @@ static const uint32_t kzstdgpu_DispatchSlot_FinaliseSequenceOffsets      = 9;
 static const uint32_t kzstdgpu_DispatchSlot_PrefixSequenceOffsets        = 10;
 static const uint32_t kzstdgpu_DispatchSlot_ComputePrefixSum             = 11;
 static const uint32_t kzstdgpu_DispatchSlot_PrefixBlockSizesAll          = 12;
-static const uint32_t kzstdgpu_DispatchSlot_PrefixBlockSizesUnc          = 13;
+static const uint32_t kzstdgpu_DispatchSlot_PrefixUncBlockCopyGroups     = 13;
 static const uint32_t kzstdgpu_DispatchSlot_MemsetMemcpy                 = 14;
 static const uint32_t kzstdgpu_DispatchSlot_ParseCompressedBlocks        = 15;
 static const uint32_t kzstdgpu_DispatchSlot_Memset_UncBlockLookback      = 16;
@@ -441,7 +441,7 @@ static const uint32_t kzstdgpu_TgSizeX_FinaliseSequenceOffsets = 256;
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
 static const uint32_t kzstdgpu_TgSizeX_MemsetMemcpy = 64;
 #else
-static const uint32_t kzstdgpu_TgSizeX_MemsetMemcpy = 32;
+static const uint32_t kzstdgpu_TgSizeX_MemsetMemcpy = 128;
 #endif
 
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
@@ -449,6 +449,9 @@ static const uint32_t kzstdgpu_TgSizeX_ComputeDestBlockOffset = 64;
 #else
 static const uint32_t kzstdgpu_TgSizeX_ComputeDestBlockOffset = 128;
 #endif
+
+static const uint32_t kzstdgpu_CopyBlockBytes_BytesPerThread = 16;
+static const uint32_t kzstdgpu_CopyBlockBytes_BytesPerTGroup = kzstdgpu_TgSizeX_MemsetMemcpy * kzstdgpu_CopyBlockBytes_BytesPerThread;
 
 #define ZSTDGPU_TG_COUNT(elemCount, tgSize) (((elemCount) + (tgSize) - 1) / (tgSize))
 

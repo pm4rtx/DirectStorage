@@ -39,8 +39,8 @@ void main()
         // the arguments dependent on block counts/sizes -- these could be computed after ParseFrames
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_ComputePrefixSum,         cmpBlockCount,                            kzstdgpu_TgSizeX_PrefixSum_LiteralCount);
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_PrefixBlockSizesAll,      allBlockCount,                            kzstdgpu_TgSizeX_PrefixSum);
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_PrefixBlockSizesUnc,      uncBlockCount,                            kzstdgpu_TgSizeX_PrefixSum);
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_MemsetMemcpy,             srt.inoutCounters[0].BlocksBytes_UNC,     kzstdgpu_TgSizeX_MemsetMemcpy);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_PrefixUncBlockCopyGroups, uncBlockCount,                            kzstdgpu_TgSizeX_PrefixSum);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_MemsetMemcpy,             srt.inoutCounters[0].BlocksGroups_Unc,    1);
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_ParseCompressedBlocks,    cmpBlockCount,                            kzstdgpu_TgSizeX_ParseCompressedBlocks);
 
         // Memset dispatch slots for InitResources Stage 1
