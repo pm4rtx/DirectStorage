@@ -33,22 +33,5 @@ void main(uint2 groupId : SV_GroupId, uint threadId : SV_GroupThreadId)
         return;
     }
 
-    const uint32_t frameIdx = zstdgpu_BinarySearch(srt.inPerFrameBlockCountAll, 0, srt.frameCount, blockIdx);
-    const uint32_t firstFrameBlockIdx = srt.inPerFrameBlockCountAll[frameIdx];
-
-    uint32_t firstFrameBlockOffset = 0;
-    ZSTDGPU_BRANCH if (firstFrameBlockIdx > 0)
-    {
-        firstFrameBlockOffset = srt.inBlockSizePrefix[firstFrameBlockIdx - 1];
-    }
-
-    uint32_t blockOffset = 0;
-    ZSTDGPU_BRANCH if (blockIdx > 0)
-    {
-        blockOffset = srt.inBlockSizePrefix[blockIdx - 1];
-    }
-
-    srt.inoutBlockDestOffs[blockIdx] = srt.inUnCompressedFramesRefs[frameIdx].offs
-                                     + blockOffset
-                                     - firstFrameBlockOffset;
+    zstdgpu_ShaderEntry_ComputeDestBlockOffsets(srt, blockIdx);
 }

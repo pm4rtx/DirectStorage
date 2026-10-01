@@ -3782,6 +3782,28 @@ static void zstdgpu_ShaderEntry_DecompressSequences_MultiStream_LdsOutCache(ZSTD
 #undef kzstdgpu_DecompressSequences_ThreadsPerStream
 #endif
 
+static void zstdgpu_ShaderEntry_ComputeDestBlockOffsets(ZSTDGPU_PARAM_INOUT(zstdgpu_ComputeDestBlockOffsets_SRT) srt, uint32_t blockIdx)
+{
+    const uint32_t frameIdx = zstdgpu_BinarySearch(srt.inPerFrameBlockCountAll, 0, srt.frameCount, blockIdx);
+    const uint32_t firstFrameBlockIdx = srt.inPerFrameBlockCountAll[frameIdx];
+
+    uint32_t firstFrameBlockOffset = 0;
+    ZSTDGPU_BRANCH if (firstFrameBlockIdx > 0)
+    {
+        firstFrameBlockOffset = srt.inBlockSizePrefix[firstFrameBlockIdx - 1];
+    }
+
+    uint32_t blockOffset = 0;
+    ZSTDGPU_BRANCH if (blockIdx > 0)
+    {
+        blockOffset = srt.inBlockSizePrefix[blockIdx - 1];
+    }
+
+    srt.inoutBlockDestOffs[blockIdx] = srt.inUnCompressedFramesRefs[frameIdx].offs
+                                     + blockOffset
+                                     - firstFrameBlockOffset;
+}
+
 static void zstdgpu_ShaderEntry_FinaliseSequenceOffsets(ZSTDGPU_PARAM_INOUT(zstdgpu_FinaliseSequenceOffsets_SRT) srt, uint32_t threadId)
 {
     const uint32_t seqIdx = threadId;
