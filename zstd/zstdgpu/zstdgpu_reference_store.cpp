@@ -25,15 +25,13 @@ typedef uint32_t (*zstdgpu_FseElemOffsetFn)(uint32_t fseTableIndex, uint32_t cmp
 
 static uint32_t GFrameCount = 0;
 
-static uint32_t GBlockCountRAW = 0;
-static uint32_t GBlockCountRLE = 0;
+static uint32_t GBlockCountUNC = 0;
 static uint32_t GBlockCountCMP = 0;
 static uint32_t GZstdDataSize  = 0;
 
 static zstdgpu_ResourceDataCpu GZstd;
 
-static uint32_t GBlockIndexRAW = 0;
-static uint32_t GBlockIndexRLE = 0;
+static uint32_t GBlockIndexUNC = 0;
 static uint32_t GBlockIndexCMP = 0;
 
 // This mirrors GPU `Counters.HufLit`-- a compacted index that increments per Compressed_Block
@@ -84,8 +82,7 @@ void zstdgpu_ReferenceStore_Report_ChunkBase(const void *base)
 void zstdgpu_ReferenceStore_Report_FrameAndBlockCount(uint32_t frameCount, uint32_t rawBlockCount, uint32_t rleBlockCount, uint32_t cmpBlockCount, uint32_t zstdDataSize)
 {
     GFrameCount     = frameCount;
-    GBlockCountRAW  = rawBlockCount;
-    GBlockCountRLE  = rleBlockCount;
+    GBlockCountUNC  = rawBlockCount + rleBlockCount;
     GBlockCountCMP  = cmpBlockCount;
     GZstdDataSize   = zstdDataSize;
 }
@@ -95,7 +92,7 @@ static zstdgpu_ResourceInfo GZstdInfo;
 void zstdgpu_ReferenceStore_AllocateMemory(void)
 {
     zstdgpu_ResourceInfo_Stage_0_Init(&GZstdInfo, GFrameCount, GZstdDataSize, 0);
-    zstdgpu_ResourceInfo_Stage_1_Init(&GZstdInfo, GBlockCountRAW, GBlockCountRLE, GBlockCountCMP);
+    zstdgpu_ResourceInfo_Stage_1_Init(&GZstdInfo, GBlockCountUNC, GBlockCountCMP);
     zstdgpu_ResourceInfo_Stage_2_Init(&GZstdInfo, 4 * 1024 * 1024 /*literal count*/, 4 * 1024 * 1024 /*sequence count*/, 0, 0);
 
     zstdgpu_ResourceDataCpu_InitZero(&GZstd);
@@ -116,8 +113,7 @@ void zstdgpu_ReferenceStore_FreeMemory(void)
 
 static uint32_t zstdgpu_GetLastBlockIndex(void)
 {
-    const uint32_t allBlockCount = GBlockIndexRAW
-                                 + GBlockIndexRLE
+    const uint32_t allBlockCount = GBlockIndexUNC
                                  + GBlockIndexCMP;
 
     ZSTDGPU_ASSERT(allBlockCount >= 1u);
@@ -145,18 +141,25 @@ static void zstdgpu_AppendLastBlockSize(uint32_t size)
 
 void zstdgpu_ReferenceStore_Report_Block(const void *base, uint32_t size, ZSTDGPU_ENUM(ReferenceStore_BlockType) type)
 {
-#define APPEND(TYPE, type, base, size)                                  \
-    if (type == kzstdgpu_ReferenceStore_Block##TYPE)                          \
-    {                                                                   \
-        GZstd.Blocks##TYPE##Refs[GBlockIndex##TYPE].offs = izstdgpu_ReferenceStore_PtrToOffs(base);\
-        GZstd.Blocks##TYPE##Refs[GBlockIndex##TYPE].size = size;        \
-        GBlockIndex##TYPE += 1;                                         \
+    if (type == ZSTDGPU_ENUM_CONST(ReferenceStore_BlockRAW))
+    {
+        GZstd.BlocksUncRefs[GBlockIndexUNC].offs = izstdgpu_ReferenceStore_PtrToOffs(base);
+        GZstd.BlocksUncRefs[GBlockIndexUNC].size = zstdgpu_EncodeRawLitTypeIntoLitSize(size);
+        GBlockIndexUNC += 1;
+    }
+    else if (type == ZSTDGPU_ENUM_CONST(ReferenceStore_BlockRLE))
+    {
+        GZstd.BlocksUncRefs[GBlockIndexUNC].offs = *(const uint8_t *)base;
+        GZstd.BlocksUncRefs[GBlockIndexUNC].size = zstdgpu_EncodeRleLitTypeIntoLitSize(size);
+        GBlockIndexUNC += 1;
+    }
+    else if (type == ZSTDGPU_ENUM_CONST(ReferenceStore_BlockCMP))
+    {
+        GZstd.BlocksCMPRefs[GBlockIndexCMP].offs = izstdgpu_ReferenceStore_PtrToOffs(base);
+        GZstd.BlocksCMPRefs[GBlockIndexCMP].size = size;
+        GBlockIndexCMP += 1;
     }
 
-    APPEND(RAW, type, base, size);
-    APPEND(RLE, type, base, size);
-    APPEND(CMP, type, base, size);
-#undef APPEND
     uint32_t lastBlockIndex = zstdgpu_SetLastBlockSize(type == ZSTDGPU_ENUM_CONST(ReferenceStore_BlockCMP) ? 0 : size);
     if (type == ZSTDGPU_ENUM_CONST(ReferenceStore_BlockCMP))
     {
@@ -667,26 +670,19 @@ static ZSTDGPU_ENUM(Validate_Result) izstdgpu_ReferenceStore_Validate_OffsetsAnd
 
 ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_Blocks(const zstdgpu_ResourceDataCpu *resourceDataCpu)
 {
-    if (resourceDataCpu->Counters->Blocks_RAW != GBlockIndexRAW)
-        return ZSTDGPU_ENUM_CONST(Validate_Failed);
-
-    if (resourceDataCpu->Counters->Blocks_RLE != GBlockIndexRLE)
+    if (resourceDataCpu->Counters->Blocks_UNC != GBlockIndexUNC)
         return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
     if (resourceDataCpu->Counters->Blocks_CMP != GBlockIndexCMP)
         return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
-    #define VALIDATE_BLOCKS(name) \
-        izstdgpu_ReferenceStore_Validate_OffsetsAndSizes(GZstd.Blocks##name##Refs, GBlockCount##name, resourceDataCpu->Blocks##name##Refs, resourceDataCpu->Counters->Blocks_##name)
+    // NOTE: RLE references hold the repeated symbol on both sides, so RAW and RLE references are validated together
+    if (ZSTDGPU_ENUM_CONST(Validate_Success) != izstdgpu_ReferenceStore_Validate_OffsetsAndSizes(GZstd.BlocksUncRefs, GBlockCountUNC, resourceDataCpu->BlocksUncRefs, resourceDataCpu->Counters->Blocks_UNC))
+        return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
-        if (ZSTDGPU_ENUM_CONST(Validate_Success) != VALIDATE_BLOCKS(RAW))
-            return ZSTDGPU_ENUM_CONST(Validate_Failed);
+    if (ZSTDGPU_ENUM_CONST(Validate_Success) != izstdgpu_ReferenceStore_Validate_OffsetsAndSizes(GZstd.BlocksCMPRefs, GBlockCountCMP, resourceDataCpu->BlocksCMPRefs, resourceDataCpu->Counters->Blocks_CMP))
+        return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
-        //VALIDATE_BLOCKS(RLE);
-        if (ZSTDGPU_ENUM_CONST(Validate_Success) != VALIDATE_BLOCKS(CMP))
-            return ZSTDGPU_ENUM_CONST(Validate_Failed);
-
-    #undef VALIDATE_BLOCKS
     return ZSTDGPU_ENUM_CONST(Validate_Success);
 }
 
