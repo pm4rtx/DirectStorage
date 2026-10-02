@@ -323,16 +323,14 @@ static const uint32_t kzstdgpu_DispatchSlot_DecompressSequences          = 8;
 static const uint32_t kzstdgpu_DispatchSlot_FinaliseSequenceOffsets      = 9;
 static const uint32_t kzstdgpu_DispatchSlot_PrefixSequenceOffsets        = 10;
 static const uint32_t kzstdgpu_DispatchSlot_ComputePrefixSum             = 11;
-static const uint32_t kzstdgpu_DispatchSlot_PrefixBlockSizesAll          = 12;
-static const uint32_t kzstdgpu_DispatchSlot_PrefixUncBlockCopyGroups     = 13;
-static const uint32_t kzstdgpu_DispatchSlot_MemsetMemcpy                 = 14;
-static const uint32_t kzstdgpu_DispatchSlot_ParseCompressedBlocks        = 15;
-static const uint32_t kzstdgpu_DispatchSlot_Memset_UncBlockLookback      = 16;
-static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockLookback      = 17;
-static const uint32_t kzstdgpu_DispatchSlot_Memset_AllBlockLookback      = 18;
-static const uint32_t kzstdgpu_DispatchSlot_PropagateFseIndex            = 19;
-static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockCount         = 20;
-static const uint32_t kzstdgpu_DispatchSlot_Count                        = 21;
+static const uint32_t kzstdgpu_DispatchSlot_Prefix_AllBlockCount         = 12;
+static const uint32_t kzstdgpu_DispatchSlot_MemsetMemcpy                 = 13;
+static const uint32_t kzstdgpu_DispatchSlot_ParseCompressedBlocks        = 14;
+static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockCount         = 15;
+static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockLookback      = 16;
+static const uint32_t kzstdgpu_DispatchSlot_Memset_AllBlockLookback      = 17;
+static const uint32_t kzstdgpu_DispatchSlot_PropagateFseIndex            = 18;
+static const uint32_t kzstdgpu_DispatchSlot_Count                        = 19;
 
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
 static const uint32_t kzstdgpu_DispatchSlot_CmdsPerSlot                  = 1;

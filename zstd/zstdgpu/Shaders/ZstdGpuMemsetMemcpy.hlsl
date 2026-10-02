@@ -26,14 +26,13 @@ void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
     zstdgpu_Srt_Fill(srt);
 
     const uint32_t groupId = zstdgpu_ConvertTo32BitGroupId(groupId2, srt.tgOffset);
+    const uint32_t blockCnt = srt.inCounters[0].Blocks_UNC + srt.inCounters[0].Blocks_CMP;
 
-    const uint32_t uncBlockIdx = zstdgpu_BinarySearch(srt.inUncBlockToCopyGroupPrfx, 0, srt.inCounters[0].Blocks_UNC, groupId);
+    const uint32_t blockId = zstdgpu_BinarySearch(srt.inBlockToCopyGroupPrefix, 0, blockCnt, groupId);
 
-    const zstdgpu_OffsetAndSize blockRef = srt.inBlocksUncRefs[uncBlockIdx];
+    const zstdgpu_OffsetAndSize blockRef = srt.inBlocksUncRefs[blockId];
 
-    const uint32_t blockGroupId = groupId - srt.inUncBlockToCopyGroupPrfx[uncBlockIdx];
-
-    const uint32_t blockId = srt.inGlobalBlockIndexPerUncBlock[uncBlockIdx];
+    const uint32_t blockGroupId = groupId - srt.inBlockToCopyGroupPrefix[blockId];
 
     const uint32_t dstBlockOfs = srt.inBlockDestOffs[blockId];
     const uint32_t dstGroupOfs = dstBlockOfs + blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup;
@@ -41,7 +40,9 @@ void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
     const uint32_t blockByteCnt = zstdgpu_DecodeLitSize(blockRef.size);
     const uint32_t groupByteCnt = zstdgpu_MinU32(blockByteCnt - blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup, kzstdgpu_CopyBlockBytes_BytesPerTGroup);
 
-    ZSTDGPU_BRANCH if (zstdgpu_IsLitTypeRaw(zstdgpu_DecodeLitType(blockRef.size)))
+    const uint32_t blkType = zstdgpu_DecodeLitType(blockRef.size);
+
+    ZSTDGPU_BRANCH if (zstdgpu_IsLitTypeRaw(blkType))
     {
         const uint32_t srcBlockOfs = blockRef.offs;
         const uint32_t srcGroupOfs = srcBlockOfs + blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup;
@@ -49,14 +50,14 @@ void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
         ZSTDGPU_FOR_WORK_ITEMS(byteIdx, groupByteCnt, i, kzstdgpu_TgSizeX_MemsetMemcpy)
         {
             const uint32_t byteOfs = srcGroupOfs + byteIdx;
-            srt.inoutUnCompressedFramesData[dstGroupOfs + byteIdx] = (srt.inCompressedData[byteOfs >> 2u] >> ((byteOfs & 3u) << 3u)) & 0xffu;
+            zstdgpu_TypedStoreU8(srt.inoutUnCompressedFramesData, dstGroupOfs + byteIdx, (srt.inCompressedData[byteOfs >> 2u] >> ((byteOfs & 3u) << 3u)) & 0xffu);
         }
     }
     else
     {
         ZSTDGPU_FOR_WORK_ITEMS(byteIdx, groupByteCnt, i, kzstdgpu_TgSizeX_MemsetMemcpy)
         {
-            srt.inoutUnCompressedFramesData[dstGroupOfs + byteIdx] = blockRef.offs;
+            zstdgpu_TypedStoreU8(srt.inoutUnCompressedFramesData, dstGroupOfs + byteIdx, blockRef.offs);
         }
     }
 }

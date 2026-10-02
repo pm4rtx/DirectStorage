@@ -402,9 +402,8 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
                                                   ZSTDGPU_RW_BUFFER(zstdgpu_OffsetAndSize) outBlocksUncRefs,
                                                   ZSTDGPU_RW_BUFFER(zstdgpu_OffsetAndSize) outBlocksCMPRefs,
                                                   ZSTDGPU_RW_BUFFER(uint32_t) outPerBlockUncompressedSize,
-                                                  ZSTDGPU_RW_BUFFER(uint32_t) outGlobalBlockIndexPerUncBlock,
                                                   ZSTDGPU_RW_BUFFER(uint32_t) outGlobalBlockIndexPerCmpBlock,
-                                                  ZSTDGPU_RW_BUFFER(uint32_t) outUncBlockToCopyGroupPrfx,
+                                                  ZSTDGPU_RW_BUFFER(uint32_t) outPerBlockCopyGroupCount,
                                                   ZSTDGPU_PARAM_INOUT(zstdgpu_Forward_BitBuffer) bits,
                                                   uint32_t outputBlockInfo)
 {
@@ -462,12 +461,14 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
             // so, it's either DXC or IHV compiler not preserving branches with memory accesses.
             ZSTDGPU_BRANCH if (isUnc)
             {
-                outBlocksUncRefs[outFrameInfo.uncBlockStart].offs = blockOffs;
-                outBlocksUncRefs[outFrameInfo.uncBlockStart].size = isRaw ? zstdgpu_EncodeRawLitTypeIntoLitSize(blockSize)
-                                                                          : zstdgpu_EncodeRleLitTypeIntoLitSize(blockSize);
-
-                outGlobalBlockIndexPerUncBlock[outFrameInfo.uncBlockStart] = blockIndex;
-                outUncBlockToCopyGroupPrfx[outFrameInfo.uncBlockStart] = uncBlockCopyGroupCount;
+                outBlocksUncRefs[blockIndex].offs = blockOffs;
+                outBlocksUncRefs[blockIndex].size = isRaw ? zstdgpu_EncodeRawLitTypeIntoLitSize(blockSize)
+                                                          : zstdgpu_EncodeRleLitTypeIntoLitSize(blockSize);
+            }
+            else
+            {
+                outBlocksUncRefs[blockIndex].offs = 0;
+                outBlocksUncRefs[blockIndex].size = 0;
             }
 
             ZSTDGPU_BRANCH if (isCmp)
@@ -479,6 +480,7 @@ static inline void zstdgpu_ShaderEntry_ParseFrame(ZSTDGPU_PARAM_INOUT(zstdgpu_Fr
             }
 
             outPerBlockUncompressedSize[blockIndex] = isCmp ? 0 : blockSize;
+            outPerBlockCopyGroupCount[blockIndex] = isUnc ? uncBlockCopyGroupCount : 0;
         }
 
         // `Raw_Block` - this is an uncompressed block. `Block_Content` contains `Block_Size` bytes.
@@ -540,9 +542,8 @@ static inline void zstdgpu_ShaderEntry_ParseFrames(ZSTDGPU_PARAM_INOUT(zstdgpu_P
                 srt.inoutBlocksUncRefs,
                 srt.inoutBlocksCMPRefs,
                 srt.inoutBlockSizePrefix,
-                srt.inoutGlobalBlockIndexPerUncBlock,
                 srt.inoutGlobalBlockIndexPerCmpBlock,
-                srt.inoutUncBlockToCopyGroupPrfx,
+                srt.inoutBlockToCopyGroupPrefix,
                 bits,
                 srt.countBlocksOnly > 0 ? 0u : 1u
             );
