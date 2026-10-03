@@ -566,7 +566,7 @@ static inline void zstdgpu_ShaderEntry_ParseFrames(ZSTDGPU_PARAM_INOUT(zstdgpu_P
                 {
                     InterlockedAdd(srt.inoutCounters[0].Blocks_UNC, uncBlockCount);
                     InterlockedAdd(srt.inoutCounters[0].Blocks_CMP, cmpBlockCount);
-                    InterlockedAdd(srt.inoutCounters[0].BlocksGroups_Unc, uncBlockCopyGroupCount);
+                    InterlockedAdd(srt.inoutCounters[0].CopyBlockGroups, uncBlockCopyGroupCount);
                     InterlockedAdd(srt.inoutCounters[0].Frames, frameCount);
                     InterlockedAdd(srt.inoutCounters[0].Frames_UncompressedByteSize, uncompSize);
                 }
@@ -602,7 +602,7 @@ static void zstdgpu_ShaderEntry_InitResources(ZSTDGPU_PARAM_INOUT(zstdgpu_InitRe
             srt.inoutCounters[0].RLE_Streams                                 = 0;
             srt.inoutCounters[0].Blocks_UNC                                  = 0;
             srt.inoutCounters[0].Blocks_CMP                                  = 0;
-            srt.inoutCounters[0].BlocksGroups_Unc                            = 0;
+            srt.inoutCounters[0].CopyBlockGroups                             = 0;
             srt.inoutCounters[0].Frames                                      = 0;
             srt.inoutCounters[0].Frames_UncompressedByteSize                 = 0;
             srt.inoutCounters[0].Frames_ExecuteSequences                     = 0;

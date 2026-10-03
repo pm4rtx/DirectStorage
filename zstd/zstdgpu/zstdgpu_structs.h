@@ -305,7 +305,7 @@ typedef struct zstdgpu_Counters
     uint32_t RLE_Streams;
     uint32_t Blocks_UNC;
     uint32_t Blocks_CMP;
-    uint32_t BlocksGroups_Unc;
+    uint32_t CopyBlockGroups;
     uint32_t Frames;
     uint32_t Frames_UncompressedByteSize;
     uint32_t Frames_ExecuteSequences;
