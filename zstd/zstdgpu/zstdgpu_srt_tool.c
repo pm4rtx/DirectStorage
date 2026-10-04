@@ -2389,6 +2389,11 @@ static void emitSrtHeader(const char *dir, int srtIdx)
         {
             sb_Str(&sb, nameToCStr(entryText->memberText));
         }
+        /** a read-only alias reads a resource stored with a different element type (e.g. `uint8_t` DecompressedLiterals read as dwords) */
+        else if (kAccessRO == entry->bindAccess && entry->bindName != entry->resName)
+        {
+            sb_Fmt(&sb, "(const %s *)cpuRes.%s", nameToCStr(entry->dataType), nameToCStr(entry->resName));
+        }
         else
         {
             sb_Fmt(&sb, "cpuRes.%s", nameToCStr(entry->resName));

@@ -354,6 +354,18 @@ static void zstdgpu_Test_DecompressLiterals(zstdgpu_ResourceDataCpu & cpuRes, zs
     }
 }
 
+static uint32_t zstdgpu_ExclusivePrefixSumCpu(uint32_t *values, uint32_t count)
+{
+    uint32_t prefix = 0;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const uint32_t value = values[i];
+        values[i] = prefix;
+        prefix += value;
+    }
+    return prefix;
+}
+
 static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, zstdgpu_ResourceDataCpu & gpuReadbackRes, uint32_t zstdDataBufferSize, bool chkGpu, bool simGpu)
 {
     ZSTDGPU_UNUSED(cpuRes);
@@ -383,22 +395,42 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             srt.inoutPerSeqStreamFinalOffset2   = cpuRes.PerSeqStreamFinalOffset2;
             srt.inoutPerSeqStreamFinalOffset3   = cpuRes.PerSeqStreamFinalOffset3;
             srt.inoutBlockSizePrefix            = cpuRes.BlockSizePrefix;
+            srt.inoutBlockToCopyGroupPrefix     = cpuRes.BlockToCopyGroupPrefix;
+            srt.inoutBlocksUncRefs              = cpuRes.BlocksUncRefs;
 
-            // FIXUP(pamartis): because DecompreSequences requres 'BlockSizePrefix' to contain literal size (on GPU actual prefix is computed later)
-            // we need to setup it properly
-            const uint32_t allBlockCount = cpuRes.Counters->Blocks_UNC
-                                         + cpuRes.Counters->Blocks_CMP;
+            // NOTE: `Counters` are read and accumulated by `DecompressSequences`, so the simulation accumulates into a copy of GPU counters
+            zstdgpu_Counters counters = *gpuReadbackRes.Counters;
+            srt.inoutCounters = &counters;
+
+            // FIXUP(pavel): we run this pass over `allBlockCount` to re-compute `BlockSizePrefix`, `BlockToCopyGroupPrefix` and `BlocksUncRefs`
+            const uint32_t allBlockCount = cpuRes.Counters->Blocks_CMP
+                                         + cpuRes.Counters->Blocks_UNC;
+
+            // NOTE(pavel): zero the counter and re-compute the number of groups
+            counters.CopyBlockGroups = 0;
 
             for (uint32_t blockIdx = 0, cmpBlockIdx = 0; blockIdx < allBlockCount; ++blockIdx)
             {
                 if (cmpBlockIdx < cpuRes.Counters->Blocks_CMP && cpuRes.GlobalBlockIndexPerCmpBlock[cmpBlockIdx] == blockIdx)
                 {
                     cpuRes.BlockSizePrefix[blockIdx] = zstdgpu_DecodeLitSize(cpuRes.CompressedBlocks[cmpBlockIdx].literal.size);
+                    cpuRes.BlockToCopyGroupPrefix[blockIdx] = ZSTDGPU_TG_COUNT(cpuRes.BlockSizePrefix[blockIdx], kzstdgpu_CopyBlockBytes_BytesPerTGroup);
+                    cpuRes.BlocksUncRefs[blockIdx] = cpuRes.CompressedBlocks[cmpBlockIdx].literal;
+
+                    // NOTE(pavel): we accumulate the number of groups to copy compressed blocks w/o sequences
+                    if (~0u == cpuRes.CompressedBlocks[cmpBlockIdx].seqStreamIndex)
+                    {
+                        counters.CopyBlockGroups += cpuRes.BlockToCopyGroupPrefix[blockIdx];
+                    }
                     ++cmpBlockIdx;
                 }
                 else
                 {
                     cpuRes.BlockSizePrefix[blockIdx] = zstdgpu_DecodeLitSize(cpuRes.BlocksUncRefs[blockIdx].size);
+                    cpuRes.BlockToCopyGroupPrefix[blockIdx] = ZSTDGPU_TG_COUNT(cpuRes.BlockSizePrefix[blockIdx], kzstdgpu_CopyBlockBytes_BytesPerTGroup);
+
+                    // NOTE(pavel): we accumulate the number of groups to copy uncompressed blocks
+                    counters.CopyBlockGroups += cpuRes.BlockToCopyGroupPrefix[blockIdx];
                 }
             }
 
@@ -406,6 +438,9 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             {
                 zstdgpu_ShaderEntry_DecompressSequences_MultiStream(srt, /* groupId */ i, /* threadId */ 0, /* streamsPerGroup */ 1);
             }
+            // CPU equivalent of [Prefix Block Copy Group Counts] on the simulated counts
+            const uint32_t copyGroupCount = zstdgpu_ExclusivePrefixSumCpu(cpuRes.BlockToCopyGroupPrefix, allBlockCount);
+            ZSTDGPU_ASSERT_MSG(copyGroupCount == counters.CopyBlockGroups, "%u != %u", copyGroupCount, counters.CopyBlockGroups);
             // Compute prefix sum of block sizes
 
             // FIXUP(pamartis): because after `DecompreSequences` execution 'BlockSizePrefix' contain actual size of the block,
@@ -439,11 +474,16 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             uint32_t *DecompressedSequenceLLen      = gpuReadbackRes.DecompressedSequenceLLen;
             uint32_t *DecompressedSequenceMLen      = gpuReadbackRes.DecompressedSequenceMLen;
             uint32_t *DecompressedSequenceOffs      = gpuReadbackRes.DecompressedSequenceOffs;
+            zstdgpu_OffsetAndSize *BlocksUncRefs    = gpuReadbackRes.BlocksUncRefs;
+            zstdgpu_CompressedBlockData *CompressedBlocks = gpuReadbackRes.CompressedBlocks;
 
+            // NOTE: simulated copy references are validated against the entire literals they were seeded from
             gpuReadbackRes.CompressedData           = cpuRes.CompressedData;
             gpuReadbackRes.DecompressedSequenceLLen = cpuRes.DecompressedSequenceLLen;
             gpuReadbackRes.DecompressedSequenceMLen = cpuRes.DecompressedSequenceMLen;
             gpuReadbackRes.DecompressedSequenceOffs = cpuRes.DecompressedSequenceOffs;
+            gpuReadbackRes.BlocksUncRefs            = cpuRes.BlocksUncRefs;
+            gpuReadbackRes.CompressedBlocks         = cpuRes.CompressedBlocks;
 
             VALIDATE(DecompressedSequences, &gpuReadbackRes);
 
@@ -451,6 +491,8 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             gpuReadbackRes.DecompressedSequenceLLen = DecompressedSequenceLLen;
             gpuReadbackRes.DecompressedSequenceMLen = DecompressedSequenceMLen;
             gpuReadbackRes.DecompressedSequenceOffs = DecompressedSequenceOffs;
+            gpuReadbackRes.BlocksUncRefs            = BlocksUncRefs;
+            gpuReadbackRes.CompressedBlocks         = CompressedBlocks;
         }
 
     }
@@ -474,6 +516,31 @@ static void zstdgpu_Test_BlockPrefix(zstdgpu_ResourceDataCpu & cpuRes, zstdgpu_R
     #undef CHK
 
     ZSTDGPU_ASSERT(0 == memcmp(cpuRes.BlockSizePrefix, gpuReadbackRes.BlockSizePrefix, sizeof(cpuRes.BlockSizePrefix[0]) * refAllBlockCount));
+
+    ZSTDGPU_ASSERT_MSG(0 == memcmp(cpuRes.BlockToCopyGroupPrefix, gpuReadbackRes.BlockToCopyGroupPrefix, sizeof(cpuRes.BlockToCopyGroupPrefix[0]) * refAllBlockCount), "Block copy group prefix doesn't match between CPU and GPU");
+    ZSTDGPU_ASSERT_MSG(cpuRes.Counters->CopyBlockGroups == gpuReadbackRes.Counters->CopyBlockGroups, "%u != %u", cpuRes.Counters->CopyBlockGroups, gpuReadbackRes.Counters->CopyBlockGroups);
+
+    // NOTE: copy references of Huffman-compressed literals point into `DecompressedLiterals` allocated differently on CPU and GPU,
+    // so their offsets are compared relative to the entire literal of the block on each side
+    for (uint32_t blockIdx = 0, cmpBlockIdx = 0; blockIdx < refAllBlockCount; ++blockIdx)
+    {
+        const zstdgpu_OffsetAndSize cpuRef = cpuRes.BlocksUncRefs[blockIdx];
+        const zstdgpu_OffsetAndSize gpuRef = gpuReadbackRes.BlocksUncRefs[blockIdx];
+        ZSTDGPU_ASSERT_MSG(cpuRef.size == gpuRef.size, "Copy reference sizes of block %u don't match between CPU and GPU", blockIdx);
+
+        uint32_t cpuRefOffs = cpuRef.offs;
+        uint32_t gpuRefOffs = gpuRef.offs;
+        if (cmpBlockIdx < refCmpBlockCount && cpuRes.GlobalBlockIndexPerCmpBlock[cmpBlockIdx] == blockIdx)
+        {
+            if (zstdgpu_IsLitTypeCmp(zstdgpu_DecodeLitType(cpuRef.size)))
+            {
+                cpuRefOffs -= cpuRes.CompressedBlocks[cmpBlockIdx].literal.offs;
+                gpuRefOffs -= gpuReadbackRes.CompressedBlocks[cmpBlockIdx].literal.offs;
+            }
+            cmpBlockIdx += 1;
+        }
+        ZSTDGPU_ASSERT_MSG(cpuRefOffs == gpuRefOffs, "Copy reference offsets of block %u don't match between CPU and GPU", blockIdx);
+    }
 }
 
 static uint32_t zstdgpu_Test_DecompressedData(const zstdgpu_ResourceDataCpu & cpuData,
@@ -561,18 +628,6 @@ static uint32_t zstdgpu_Test_DecompressedData(const zstdgpu_ResourceDataCpu & cp
         }
     }
     return failedFrameCount;
-}
-
-static uint32_t zstdgpu_ExclusivePrefixSumCpu(uint32_t *values, uint32_t count)
-{
-    uint32_t prefix = 0;
-    for (uint32_t i = 0; i < count; ++i)
-    {
-        const uint32_t value = values[i];
-        values[i] = prefix;
-        prefix += value;
-    }
-    return prefix;
 }
 
 /**
@@ -801,6 +856,10 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
                 zstdCpu.BlockSizePrefix[i] = blockSizePrefix;
             }
         }
+
+        // CPU equivalent of [Prefix Block Copy Group Counts]
+        const uint32_t copyGroupCount = zstdgpu_ExclusivePrefixSumCpu(zstdCpu.BlockToCopyGroupPrefix, zstdAllBlockCount);
+        ZSTDGPU_ASSERT_MSG(copyGroupCount == CNTRS(CopyBlockGroups), "%u != %u", copyGroupCount, CNTRS(CopyBlockGroups));
     }
     // CPU-side replacement for cross-block "final" offset propagation
     {
@@ -880,26 +939,34 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
     zstdCpu.UnCompressedFramesData = (uint8_t *)alloc(zstdUncompressedFramesByteCount);
     memset(zstdCpu.UnCompressedFramesData, 0xCD, zstdUncompressedFramesByteCount);
 
-    // CPU equivalent of [Memset/Memcpy Unc blocks]
-    for (uint32_t blockIdx = 0; blockIdx < zstdUncBlockCount + zstdCmpBlockCount; ++blockIdx)
+    // CPU equivalent of [Memset/Memcpy]
     {
-        const zstdgpu_OffsetAndSize block = zstdCpu.BlocksUncRefs[blockIdx];
-        if (block.size)
+        // NOTE: [Memset/Memcpy] writes the end of each block, so the entire range of each block is checked
+        for (uint32_t blockIdx = 0; blockIdx < zstdAllBlockCount; ++blockIdx)
         {
-            const uint32_t dstOffset = zstdCpu.BlockDestOffs[blockIdx];
-            const uint32_t byteCount = zstdgpu_DecodeLitSize(zstdCpu.BlocksUncRefs[blockIdx].size);
+            const uint32_t blockBeg = blockIdx > 0 ? zstdCpu.BlockSizePrefix[blockIdx - 1u] : 0u;
+            const uint32_t blockOfs = zstdCpu.BlockSizePrefix[blockIdx] - blockBeg;
+
+            const zstdgpu_OffsetAndSize & block = zstdCpu.BlocksUncRefs[blockIdx];
+            const uint32_t byteCount = zstdgpu_DecodeLitSize(block.size);
+
+            const uint32_t dstOffset = zstdCpu.BlockDestOffs[blockIdx] + blockOfs - byteCount;
             ZSTDGPU_ASSERT(dstOffset <= zstdUncompressedFramesByteCount && byteCount <= zstdUncompressedFramesByteCount - dstOffset);
-            if (zstdgpu_IsLitTypeRaw(zstdgpu_DecodeLitType(zstdCpu.BlocksUncRefs[blockIdx].size)))
+
+            const uint32_t litType = zstdgpu_DecodeLitType(block.size);
+            if (zstdgpu_IsLitTypeRaw(litType))
             {
                 memcpy(zstdCpu.UnCompressedFramesData + dstOffset, (const uint8_t *)zstdCpu.CompressedData + block.offs, byteCount);
             }
-            else
+            else if (zstdgpu_IsLitTypeRle(litType))
             {
                 memset(zstdCpu.UnCompressedFramesData + dstOffset, (uint8_t)block.offs, byteCount);
             }
+            else if (zstdgpu_IsLitTypeCmp(litType))
+            {
+                memcpy(zstdCpu.UnCompressedFramesData + dstOffset, (const uint8_t *)zstdCpu.DecompressedLiterals + block.offs, byteCount);
+            }
         }
-    }
-    {
     }
 
     CNTRS(Frames_ExecuteSequences) = 0;

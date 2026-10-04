@@ -34,11 +34,18 @@ void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 
     const uint32_t blockGroupId = groupId - srt.inBlockToCopyGroupPrefix[blockId];
 
-    const uint32_t dstBlockOfs = srt.inBlockDestOffs[blockId];
-    const uint32_t dstGroupOfs = dstBlockOfs + blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup;
+    uint32_t blockOfs = 0;
+    ZSTDGPU_BRANCH if (blockId > 0)
+    {
+        blockOfs = srt.inBlockSizePrefix[blockId - 1];
+    }
+    const uint32_t blockSize = srt.inBlockSizePrefix[blockId] - blockOfs;
 
     const uint32_t blockByteCnt = zstdgpu_DecodeLitSize(blockRef.size);
     const uint32_t groupByteCnt = zstdgpu_MinU32(blockByteCnt - blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup, kzstdgpu_CopyBlockBytes_BytesPerTGroup);
+
+    const uint32_t dstBlockOfs = srt.inBlockDestOffs[blockId] + blockSize - blockByteCnt;
+    const uint32_t dstGroupOfs = dstBlockOfs + blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup;
 
     const uint32_t blkType = zstdgpu_DecodeLitType(blockRef.size);
 
@@ -53,11 +60,23 @@ void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
             zstdgpu_TypedStoreU8(srt.inoutUnCompressedFramesData, dstGroupOfs + byteIdx, (srt.inCompressedData[byteOfs >> 2u] >> ((byteOfs & 3u) << 3u)) & 0xffu);
         }
     }
-    else
+    else if (zstdgpu_IsLitTypeRle(blkType))
     {
         ZSTDGPU_FOR_WORK_ITEMS(byteIdx, groupByteCnt, i, kzstdgpu_TgSizeX_MemsetMemcpy)
         {
             zstdgpu_TypedStoreU8(srt.inoutUnCompressedFramesData, dstGroupOfs + byteIdx, blockRef.offs);
+        }
+    }
+    else if (zstdgpu_IsLitTypeCmp(blkType))
+    {
+        const uint32_t srcBlockOfs = blockRef.offs;
+        const uint32_t srcGroupOfs = srcBlockOfs + blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup;
+
+        // NOTE: `DecompressedLiterals` is padded to a dword, so the dword load is in-bounds
+        ZSTDGPU_FOR_WORK_ITEMS(byteIdx, groupByteCnt, i, kzstdgpu_TgSizeX_MemsetMemcpy)
+        {
+            const uint32_t byteOfs = srcGroupOfs + byteIdx;
+            zstdgpu_TypedStoreU8(srt.inoutUnCompressedFramesData, dstGroupOfs + byteIdx, (srt.inDecompressedLiterals_Dwords[byteOfs >> 2u] >> ((byteOfs & 3u) << 3u)) & 0xffu);
         }
     }
 }

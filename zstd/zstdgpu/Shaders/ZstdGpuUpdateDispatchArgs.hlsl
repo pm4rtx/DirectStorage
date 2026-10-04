@@ -37,10 +37,9 @@ void main()
 
 
         // the arguments dependent on block counts/sizes -- these could be computed after ParseFrames
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_ComputePrefixSum,         cmpBlockCount,                            kzstdgpu_TgSizeX_PrefixSum_LiteralCount);
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_Prefix_AllBlockCount,     allBlockCount,                            kzstdgpu_TgSizeX_PrefixSum);
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_MemsetMemcpy,             srt.inoutCounters[0].CopyBlockGroups,     1);
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_ParseCompressedBlocks,    cmpBlockCount,                            kzstdgpu_TgSizeX_ParseCompressedBlocks);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_ComputePrefixSum,      cmpBlockCount, kzstdgpu_TgSizeX_PrefixSum_LiteralCount);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_Prefix_AllBlockCount,  allBlockCount, kzstdgpu_TgSizeX_PrefixSum);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_ParseCompressedBlocks, cmpBlockCount, kzstdgpu_TgSizeX_ParseCompressedBlocks);
 
         // Memset dispatch slots for InitResources Stage 1
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_Memset_CmpBlockLookback,    zstdgpu_GetLookbackBlockCount(cmpBlockCount),                    kzstdgpu_TgSizeX_Memset);
@@ -84,9 +83,14 @@ void main()
 
         srt.inoutPredicate[2] = srt.inoutPredicate[2] | predicateMask; // lower 32-bits of Stage 2 predicate
     }
-    else
+    else ZSTDGPU_BRANCH if (srt.stage == 2)
     {
         // The number of Groups required for `DecompressLiterals` is only calculated after `ComputePrefixSum`
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_DecompressLiterals,       srt.inoutCounters[0].DecompressLiteralsGroups, 1);
+    }
+    else ZSTDGPU_BRANCH if (srt.stage == 3)
+    {
+        // The number of Groups required for `MemsetMemcpy` is only calculated after `DecompressSequences`
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_MemsetMemcpy, srt.inoutCounters[0].CopyBlockGroups, 1);
     }
 }

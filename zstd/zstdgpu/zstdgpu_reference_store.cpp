@@ -157,10 +157,6 @@ void zstdgpu_ReferenceStore_Report_Block(const void *base, uint32_t size, ZSTDGP
     }
     else if (type == ZSTDGPU_ENUM_CONST(ReferenceStore_BlockCMP))
     {
-        // NOTE(pamartis): for compressed blocks, so far BlocksUncRefs must contain zero
-        GZstd.BlocksUncRefs[blockIndex].offs = 0;
-        GZstd.BlocksUncRefs[blockIndex].size = 0;
-
         GZstd.BlocksCMPRefs[GBlockIndexCMP].offs = izstdgpu_ReferenceStore_PtrToOffs(base);
         GZstd.BlocksCMPRefs[GBlockIndexCMP].size = size;
         GBlockIndexCMP += 1;
@@ -1091,6 +1087,10 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_DecompressedSequen
         {
             if (tstData->CompressedBlocks[i].seqStreamIndex != ~0u)
                 return ZSTDGPU_ENUM_CONST(Validate_Failed);
+
+            // NOTE: blocks without sequences copy the entire literal
+            if (ZSTDGPU_ENUM_CONST(Validate_Success) != izstdgpu_ReferenceStore_Validate_OffsetAndSize(&tstData->CompressedBlocks[i].literal, &tstData->BlocksUncRefs[cmpBlockIndex]))
+                return ZSTDGPU_ENUM_CONST(Validate_Failed);
         }
         else
         {
@@ -1133,6 +1133,28 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_DecompressedSequen
                     return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
                 if (0 != memcmp(&refData->DecompressedSequenceOffs[refSeqOffs], &tstData->DecompressedSequenceOffs[tstSeqOffs], refSeqCount * sizeof(refData->DecompressedSequenceOffs[0])))
+                    return ZSTDGPU_ENUM_CONST(Validate_Failed);
+
+                // NOTE(pavel): blocks with sequences copy the literal tail not copied by sequences.
+                uint32_t llenSum = 0;
+                for (uint32_t seqId = 0; seqId < refSeqCount; ++seqId)
+                {
+                    llenSum += refData->DecompressedSequenceLLen[refSeqOffs + seqId];
+                }
+
+                const zstdgpu_OffsetAndSize *tstLit = &tstData->CompressedBlocks[i].literal;
+                const zstdgpu_OffsetAndSize *tstCopyRef = &tstData->BlocksUncRefs[cmpBlockIndex];
+                const uint32_t litType = zstdgpu_DecodeLitType(tstLit->size);
+                const uint32_t litSize = zstdgpu_DecodeLitSize(tstLit->size);
+
+                if (llenSum > litSize)
+                    return ZSTDGPU_ENUM_CONST(Validate_Failed);
+
+                if (tstCopyRef->size != (litType | (litSize - llenSum)))
+                    return ZSTDGPU_ENUM_CONST(Validate_Failed);
+
+                // NOTE: RLE literals contain actual symbol instead of offset
+                if (tstCopyRef->offs != (zstdgpu_IsLitTypeRle(litType) ? tstLit->offs : tstLit->offs + llenSum))
                     return ZSTDGPU_ENUM_CONST(Validate_Failed);
             }
 

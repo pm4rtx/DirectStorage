@@ -720,6 +720,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_KERNEL_SCOPE_X(PrefixSequenceOffsets                , L"Propagate Sequence Offsets" )   \
     ZSTDGPU_KERNEL_SCOPE_X(FinaliseSequenceOffsets              , L"Finalise Sequence Offsets"  )   \
     ZSTDGPU_KERNEL_SCOPE_X(ComputeDestBlockOffsets              , L"Compute Dest Block Offsets" )   \
+    ZSTDGPU_KERNEL_SCOPE_X(UpdateDispatchArgs_AfterDecompressSeq, L"UpdateDispatchArgs:: After Decompress Sequences")  \
     ZSTDGPU_KERNEL_SCOPE_X(ExecuteSequences                     , L"ExecuteSequences"           )   \
     ZSTDGPU_KERNEL_SCOPE_X(MemsetMemcpy                         , L"Memset/Memcpy Unc Blocks"   )   \
     ZSTDGPU_KERNEL_SCOPE_X(PrefixBlockSizes                     , L"Prefix Block Sizes"         )   \
@@ -2704,6 +2705,24 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             zstdgpu_DispatchIndirect(cmdList, FinaliseSequenceOffsets, FinaliseSequenceOffsets);
         );
 
+        PIXEndEvent(cmdList);
+    }
+
+    // NOTE: the exact group count of [Copy Block Bytes] is known once the Cmp tail group counts are prefixed. This direct pass
+    // writes its dispatch arguments after every earlier indirect dispatch of this stage consumed its own arguments.
+    {
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Update Dispatch Args :: Copy Groups]");
+        zstdgpu_Bind_UpdateDispatchArgs_AfterDecompressSequences(cmdList, tracker, req->srts, req->resData.gpuOnly,
+            req->DecompressSequences_StreamsPerGroup,
+            3 /* stage */,
+            req->zstdCmpBlockCountMax,
+            req->zstdUncBlockCountMax,
+            /* litByteCountMax, unused for stage == 3 */0,
+            /* seqElemCountMax, unused for stage == 3 */0
+        );
+        ZSTDGPU_KERNEL_SCOPE(UpdateDispatchArgs_AfterDecompressSeq, cmdList,
+            cmdList->Dispatch(1, 1, 1);
+        );
         PIXEndEvent(cmdList);
     }
 
