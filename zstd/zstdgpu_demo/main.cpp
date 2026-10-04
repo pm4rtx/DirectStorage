@@ -386,18 +386,19 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
 
             // FIXUP(pamartis): because DecompreSequences requres 'BlockSizePrefix' to contain literal size (on GPU actual prefix is computed later)
             // we need to setup it properly
-            for (uint32_t i = 0; i < cpuRes.Counters->Blocks_CMP; ++i)
-            {
-                const uint32_t literalSize = zstdgpu_DecodeLitSize(cpuRes.CompressedBlocks[i].literal.size);
-                const uint32_t dstBlockIndex = cpuRes.GlobalBlockIndexPerCmpBlock[i];
-                cpuRes.BlockSizePrefix[dstBlockIndex] = literalSize;
-            }
+            const uint32_t allBlockCount = cpuRes.Counters->Blocks_UNC
+                                         + cpuRes.Counters->Blocks_CMP;
 
-            for (uint32_t i = 0; i < cpuRes.Counters->Blocks_UNC + cpuRes.Counters->Blocks_CMP; ++i)
+            for (uint32_t blockIdx = 0, cmpBlockIdx = 0; blockIdx < allBlockCount; ++blockIdx)
             {
-                if (cpuRes.BlocksUncRefs[i].size)
+                if (cmpBlockIdx < cpuRes.Counters->Blocks_CMP && cpuRes.GlobalBlockIndexPerCmpBlock[cmpBlockIdx] == blockIdx)
                 {
-                    cpuRes.BlockSizePrefix[i] = zstdgpu_DecodeLitSize(cpuRes.BlocksUncRefs[i].size);
+                    cpuRes.BlockSizePrefix[blockIdx] = zstdgpu_DecodeLitSize(cpuRes.CompressedBlocks[cmpBlockIdx].literal.size);
+                    ++cmpBlockIdx;
+                }
+                else
+                {
+                    cpuRes.BlockSizePrefix[blockIdx] = zstdgpu_DecodeLitSize(cpuRes.BlocksUncRefs[blockIdx].size);
                 }
             }
 
@@ -406,8 +407,6 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
                 zstdgpu_ShaderEntry_DecompressSequences_MultiStream(srt, /* groupId */ i, /* threadId */ 0, /* streamsPerGroup */ 1);
             }
             // Compute prefix sum of block sizes
-            const uint32_t allBlockCount = cpuRes.Counters->Blocks_CMP
-                                         + cpuRes.Counters->Blocks_UNC;
 
             // FIXUP(pamartis): because after `DecompreSequences` execution 'BlockSizePrefix' contain actual size of the block,
             // not the prefix (it's computed after `DecompreSequences`  on GPU) we update the prefix manually
