@@ -3864,6 +3864,65 @@ static void zstdgpu_ShaderEntry_FinaliseSequenceOffsets(ZSTDGPU_PARAM_INOUT(zstd
     srt.inoutDecompressedSequenceOffs[seqIdx] = offset;
 }
 
+static void zstdgpu_ShaderEntry_MemsetMemcpy(ZSTDGPU_PARAM_INOUT(zstdgpu_MemsetMemcpy_SRT) srt, uint32_t groupId, uint32_t threadId)
+{
+    ZSTDGPU_UNUSED(threadId);
+
+    const uint32_t blockCnt = srt.inCounters[0].Blocks_UNC + srt.inCounters[0].Blocks_CMP;
+
+    const uint32_t blockId = zstdgpu_BinarySearch(srt.inBlockToCopyGroupPrefix, 0, blockCnt, groupId);
+
+    const zstdgpu_OffsetAndSize blockRef = srt.inBlocksUncRefs[blockId];
+
+    const uint32_t blockGroupId = groupId - srt.inBlockToCopyGroupPrefix[blockId];
+
+    uint32_t blockOfs = 0;
+    ZSTDGPU_BRANCH if (blockId > 0)
+    {
+        blockOfs = srt.inBlockSizePrefix[blockId - 1];
+    }
+    const uint32_t blockSize = srt.inBlockSizePrefix[blockId] - blockOfs;
+
+    const uint32_t blockByteCnt = zstdgpu_DecodeLitSize(blockRef.size);
+    const uint32_t groupByteCnt = zstdgpu_MinU32(blockByteCnt - blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup, kzstdgpu_CopyBlockBytes_BytesPerTGroup);
+
+    const uint32_t dstBlockOfs = srt.inBlockDestOffs[blockId] + blockSize - blockByteCnt;
+    const uint32_t dstGroupOfs = dstBlockOfs + blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup;
+
+    const uint32_t blkType = zstdgpu_DecodeLitType(blockRef.size);
+
+    ZSTDGPU_BRANCH if (zstdgpu_IsLitTypeRaw(blkType))
+    {
+        const uint32_t srcBlockOfs = blockRef.offs;
+        const uint32_t srcGroupOfs = srcBlockOfs + blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup;
+
+        ZSTDGPU_FOR_WORK_ITEMS(byteIdx, groupByteCnt, threadId, kzstdgpu_TgSizeX_MemsetMemcpy)
+        {
+            const uint32_t byteOfs = srcGroupOfs + byteIdx;
+            zstdgpu_TypedStoreU8(srt.inoutUnCompressedFramesData, dstGroupOfs + byteIdx, (srt.inCompressedData[byteOfs >> 2u] >> ((byteOfs & 3u) << 3u)) & 0xffu);
+        }
+    }
+    else if (zstdgpu_IsLitTypeRle(blkType))
+    {
+        ZSTDGPU_FOR_WORK_ITEMS(byteIdx, groupByteCnt, threadId, kzstdgpu_TgSizeX_MemsetMemcpy)
+        {
+            zstdgpu_TypedStoreU8(srt.inoutUnCompressedFramesData, dstGroupOfs + byteIdx, blockRef.offs);
+        }
+    }
+    else if (zstdgpu_IsLitTypeCmp(blkType))
+    {
+        const uint32_t srcBlockOfs = blockRef.offs;
+        const uint32_t srcGroupOfs = srcBlockOfs + blockGroupId * kzstdgpu_CopyBlockBytes_BytesPerTGroup;
+
+        // NOTE: `DecompressedLiterals` is padded to a dword, so the dword load is in-bounds
+        ZSTDGPU_FOR_WORK_ITEMS(byteIdx, groupByteCnt, threadId, kzstdgpu_TgSizeX_MemsetMemcpy)
+        {
+            const uint32_t byteOfs = srcGroupOfs + byteIdx;
+            zstdgpu_TypedStoreU8(srt.inoutUnCompressedFramesData, dstGroupOfs + byteIdx, (srt.inDecompressedLiterals_Dwords[byteOfs >> 2u] >> ((byteOfs & 3u) << 3u)) & 0xffu);
+        }
+    }
+}
+
 struct zstdgpu_Sequence
 {
     uint32_t mlen;

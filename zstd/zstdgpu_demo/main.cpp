@@ -190,6 +190,7 @@ static const int16_t kzstdgpuFseProbsDefault[] =
 #include ".generated/ZstdGpuSrt_DecompressSequences.h"
 #include ".generated/ZstdGpuSrt_FinaliseSequenceOffsets.h"
 #include ".generated/ZstdGpuSrt_ComputeDestBlockOffsets.h"
+#include ".generated/ZstdGpuSrt_MemsetMemcpy.h"
 #include ".generated/ZstdGpuSrt_ExecuteSequences.h"
 
 #define VALIDATE(name, data) ZSTDGPU_ASSERT(ZSTDGPU_ENUM_CONST(Validate_Success) == zstdgpu_ReferenceStore_Validate_##name(data))
@@ -939,33 +940,12 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
     zstdCpu.UnCompressedFramesData = (uint8_t *)alloc(zstdUncompressedFramesByteCount);
     memset(zstdCpu.UnCompressedFramesData, 0xCD, zstdUncompressedFramesByteCount);
 
-    // CPU equivalent of [Memset/Memcpy]
     {
-        // NOTE: [Memset/Memcpy] writes the end of each block, so the entire range of each block is checked
-        for (uint32_t blockIdx = 0; blockIdx < zstdAllBlockCount; ++blockIdx)
+        zstdgpu_MemsetMemcpy_SRT srt;
+        zstdgpu_Srt_Fill(srt, zstdCpu, /* tgOffset */0, /* workItemCount */CNTRS(CopyBlockGroups));
+        for (uint32_t groupId = 0; groupId < CNTRS(CopyBlockGroups); ++groupId)
         {
-            const uint32_t blockBeg = blockIdx > 0 ? zstdCpu.BlockSizePrefix[blockIdx - 1u] : 0u;
-            const uint32_t blockOfs = zstdCpu.BlockSizePrefix[blockIdx] - blockBeg;
-
-            const zstdgpu_OffsetAndSize & block = zstdCpu.BlocksUncRefs[blockIdx];
-            const uint32_t byteCount = zstdgpu_DecodeLitSize(block.size);
-
-            const uint32_t dstOffset = zstdCpu.BlockDestOffs[blockIdx] + blockOfs - byteCount;
-            ZSTDGPU_ASSERT(dstOffset <= zstdUncompressedFramesByteCount && byteCount <= zstdUncompressedFramesByteCount - dstOffset);
-
-            const uint32_t litType = zstdgpu_DecodeLitType(block.size);
-            if (zstdgpu_IsLitTypeRaw(litType))
-            {
-                memcpy(zstdCpu.UnCompressedFramesData + dstOffset, (const uint8_t *)zstdCpu.CompressedData + block.offs, byteCount);
-            }
-            else if (zstdgpu_IsLitTypeRle(litType))
-            {
-                memset(zstdCpu.UnCompressedFramesData + dstOffset, (uint8_t)block.offs, byteCount);
-            }
-            else if (zstdgpu_IsLitTypeCmp(litType))
-            {
-                memcpy(zstdCpu.UnCompressedFramesData + dstOffset, (const uint8_t *)zstdCpu.DecompressedLiterals + block.offs, byteCount);
-            }
+            zstdgpu_ShaderEntry_MemsetMemcpy(srt, groupId, /* threadId */0);
         }
     }
 
