@@ -62,14 +62,12 @@
 
 #define ZSTDGPU_BUFFERS_LIST_READBACK_STAGE_1()                                                 \
     ZSTDGPU_BUFFER(uint32_t                                 , BlockSizePrefix               )   \
-    ZSTDGPU_BUFFER(uint32_t                                 , GlobalBlockIndexPerUncBlock   )   \
+    ZSTDGPU_BUFFER(uint32_t                                 , BlockToCopyGroupPrefix        )   \
     ZSTDGPU_BUFFER(uint32_t                                 , GlobalBlockIndexPerCmpBlock   )   \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset1      )   \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset2      )   \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset3      )   \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamSeqStart          )   \
-    \
-    ZSTDGPU_BUFFER(uint32_t                                 , UncBlockToCopyGroupPrfx       )   \
     \
     ZSTDGPU_BUFFER(int16_t                                  , FseProbs                      )   \
     ZSTDGPU_BUFFER(zstdgpu_FseInfo                          , FseInfos                      )   \
@@ -109,7 +107,7 @@
     ZSTDGPU_BUFFER(uint32_t                                 , HuffmanTableRankIndex         )   \
     ZSTDGPU_BUFFER(uint32_t                                 , HuffmanTableInfo              )   \
     ZSTDGPU_BUFFER(uint32_t                                 , BlockSizePrefixLookback       )   \
-    ZSTDGPU_BUFFER(uint32_t                                 , UncBlockToCopyGroupPrfxLookback)  \
+    ZSTDGPU_BUFFER(uint32_t                                 , BlockToCopyGroupPrefixLookback)   \
     ZSTDGPU_BUFFER(uint32_t                                 , LitGroupEndPerHuffmanTableLookback) \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset1Lookback)  \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset2Lookback)  \
@@ -289,18 +287,16 @@ static void zstdgpu_ResourceInfo_Stage_0_InitSize(zstdgpu_ResourceInfo *outInfo,
 
 static void zstdgpu_ResourceInfo_Stage_1_InitSize(zstdgpu_ResourceInfo *outInfo, uint32_t uncBlockCount, uint32_t cmpBlockCount)
 {
-    const uint32_t BlocksUncRefs_Count = uncBlockCount;
-    const uint32_t BlocksCMPRefs_Count = cmpBlockCount;
     const uint32_t allBlockCount = uncBlockCount + cmpBlockCount;
+    const uint32_t BlocksUncRefs_Count = allBlockCount;
+    const uint32_t BlocksCMPRefs_Count = cmpBlockCount;
 
-    const uint32_t UncBlockToCopyGroupPrfx_Count = uncBlockCount;
-    const uint32_t UncBlockToCopyGroupPrfxLookback_Count = zstdgpu_GetLookbackBlockCount(uncBlockCount);
-
-    // TODO: this must a total of all blocks (including RLE and RAW)
     const uint32_t BlockSizePrefix_Count = allBlockCount;
+    const uint32_t BlockToCopyGroupPrefix_Count = allBlockCount;
     const uint32_t BlockSizePrefixLookback_Count = zstdgpu_GetLookbackBlockCount(allBlockCount);
+    const uint32_t BlockToCopyGroupPrefixLookback_Count = zstdgpu_GetLookbackBlockCount(allBlockCount);
+
     const uint32_t BlockDestOffs_Count = allBlockCount;
-    const uint32_t GlobalBlockIndexPerUncBlock_Count = uncBlockCount;
     const uint32_t GlobalBlockIndexPerCmpBlock_Count = cmpBlockCount;
 
     const uint32_t PerSeqStreamFinalOffset1_Count = cmpBlockCount;

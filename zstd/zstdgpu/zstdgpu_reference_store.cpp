@@ -141,16 +141,18 @@ static void zstdgpu_AppendLastBlockSize(uint32_t size)
 
 void zstdgpu_ReferenceStore_Report_Block(const void *base, uint32_t size, ZSTDGPU_ENUM(ReferenceStore_BlockType) type)
 {
+    // NOTE: copy references of Unc blocks are indexed by the global block index
+    const uint32_t blockIndex = GBlockIndexUNC + GBlockIndexCMP;
     if (type == ZSTDGPU_ENUM_CONST(ReferenceStore_BlockRAW))
     {
-        GZstd.BlocksUncRefs[GBlockIndexUNC].offs = izstdgpu_ReferenceStore_PtrToOffs(base);
-        GZstd.BlocksUncRefs[GBlockIndexUNC].size = zstdgpu_EncodeRawLitTypeIntoLitSize(size);
+        GZstd.BlocksUncRefs[blockIndex].offs = izstdgpu_ReferenceStore_PtrToOffs(base);
+        GZstd.BlocksUncRefs[blockIndex].size = zstdgpu_EncodeRawLitTypeIntoLitSize(size);
         GBlockIndexUNC += 1;
     }
     else if (type == ZSTDGPU_ENUM_CONST(ReferenceStore_BlockRLE))
     {
-        GZstd.BlocksUncRefs[GBlockIndexUNC].offs = *(const uint8_t *)base;
-        GZstd.BlocksUncRefs[GBlockIndexUNC].size = zstdgpu_EncodeRleLitTypeIntoLitSize(size);
+        GZstd.BlocksUncRefs[blockIndex].offs = *(const uint8_t *)base;
+        GZstd.BlocksUncRefs[blockIndex].size = zstdgpu_EncodeRleLitTypeIntoLitSize(size);
         GBlockIndexUNC += 1;
     }
     else if (type == ZSTDGPU_ENUM_CONST(ReferenceStore_BlockCMP))
@@ -670,17 +672,23 @@ static ZSTDGPU_ENUM(Validate_Result) izstdgpu_ReferenceStore_Validate_OffsetsAnd
 
 ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_Blocks(const zstdgpu_ResourceDataCpu *resourceDataCpu)
 {
-    if (resourceDataCpu->Counters->Blocks_UNC != GBlockIndexUNC)
+    const uint32_t refBlockCountCmp = GBlockIndexCMP;
+    const uint32_t refBlockCountAll = GBlockIndexCMP + GBlockIndexUNC;
+
+    const uint32_t tstBlockCountCmp = resourceDataCpu->Counters->Blocks_CMP;
+    const uint32_t tstBlockCountAll = resourceDataCpu->Counters->Blocks_CMP + resourceDataCpu->Counters->Blocks_UNC;
+
+    if (tstBlockCountAll != refBlockCountAll)
         return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
-    if (resourceDataCpu->Counters->Blocks_CMP != GBlockIndexCMP)
+    if (tstBlockCountCmp != refBlockCountCmp)
         return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
     // NOTE: RLE references hold the repeated symbol on both sides, so RAW and RLE references are validated together
-    if (ZSTDGPU_ENUM_CONST(Validate_Success) != izstdgpu_ReferenceStore_Validate_OffsetsAndSizes(GZstd.BlocksUncRefs, GBlockCountUNC, resourceDataCpu->BlocksUncRefs, resourceDataCpu->Counters->Blocks_UNC))
+    if (ZSTDGPU_ENUM_CONST(Validate_Success) != izstdgpu_ReferenceStore_Validate_OffsetsAndSizes(GZstd.BlocksUncRefs, refBlockCountAll, resourceDataCpu->BlocksUncRefs, tstBlockCountAll))
         return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
-    if (ZSTDGPU_ENUM_CONST(Validate_Success) != izstdgpu_ReferenceStore_Validate_OffsetsAndSizes(GZstd.BlocksCMPRefs, GBlockCountCMP, resourceDataCpu->BlocksCMPRefs, resourceDataCpu->Counters->Blocks_CMP))
+    if (ZSTDGPU_ENUM_CONST(Validate_Success) != izstdgpu_ReferenceStore_Validate_OffsetsAndSizes(GZstd.BlocksCMPRefs, refBlockCountCmp, resourceDataCpu->BlocksCMPRefs, tstBlockCountCmp))
         return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
     return ZSTDGPU_ENUM_CONST(Validate_Success);
@@ -1079,6 +1087,10 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_DecompressedSequen
         {
             if (tstData->CompressedBlocks[i].seqStreamIndex != ~0u)
                 return ZSTDGPU_ENUM_CONST(Validate_Failed);
+
+            // NOTE: blocks without sequences copy the entire literal
+            if (ZSTDGPU_ENUM_CONST(Validate_Success) != izstdgpu_ReferenceStore_Validate_OffsetAndSize(&tstData->CompressedBlocks[i].literal, &tstData->BlocksUncRefs[cmpBlockIndex]))
+                return ZSTDGPU_ENUM_CONST(Validate_Failed);
         }
         else
         {
@@ -1121,6 +1133,28 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_DecompressedSequen
                     return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
                 if (0 != memcmp(&refData->DecompressedSequenceOffs[refSeqOffs], &tstData->DecompressedSequenceOffs[tstSeqOffs], refSeqCount * sizeof(refData->DecompressedSequenceOffs[0])))
+                    return ZSTDGPU_ENUM_CONST(Validate_Failed);
+
+                // NOTE(pavel): blocks with sequences copy the literal tail not copied by sequences.
+                uint32_t llenSum = 0;
+                for (uint32_t seqId = 0; seqId < refSeqCount; ++seqId)
+                {
+                    llenSum += refData->DecompressedSequenceLLen[refSeqOffs + seqId];
+                }
+
+                const zstdgpu_OffsetAndSize *tstLit = &tstData->CompressedBlocks[i].literal;
+                const zstdgpu_OffsetAndSize *tstCopyRef = &tstData->BlocksUncRefs[cmpBlockIndex];
+                const uint32_t litType = zstdgpu_DecodeLitType(tstLit->size);
+                const uint32_t litSize = zstdgpu_DecodeLitSize(tstLit->size);
+
+                if (llenSum > litSize)
+                    return ZSTDGPU_ENUM_CONST(Validate_Failed);
+
+                if (tstCopyRef->size != (litType | (litSize - llenSum)))
+                    return ZSTDGPU_ENUM_CONST(Validate_Failed);
+
+                // NOTE: RLE literals contain actual symbol instead of offset
+                if (tstCopyRef->offs != (zstdgpu_IsLitTypeRle(litType) ? tstLit->offs : tstLit->offs + llenSum))
                     return ZSTDGPU_ENUM_CONST(Validate_Failed);
             }
 
