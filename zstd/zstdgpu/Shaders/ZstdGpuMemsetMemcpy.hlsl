@@ -1,7 +1,20 @@
 /**
  * ZstdGpuMemsetMemcpy.hlsl
  *
- * A compute shader that does either a memset operation on the buffer or a memcpy.
+ * A compute shader populating contiguous region of memory from an uncompressed ZSTD block (RAW or RLE)
+ * or from a compressed ZSTD block. If the source is compressed ZSTD block,
+ * - if sequences are not present, the shader writes the entire decompressed literal (could
+ *   be RAW/RLE literal stored in the source compressed region of memory or could be decompressed
+ *   representation of Huffman compressed literal)
+ * - if sequences are present, the shader writes only the tail of decompressed literal not covered
+ *   by sequences.
+ *
+ * Each threadgroup populates a memory region of a fixed size except the last threadgroup in every ZSTD block
+ * in case of the block is not exact multiple of the specified fixed size.
+ *
+ * Each threadgroup finds ZSTD block it needs to copy from via binary search using group id and the prefix
+ * of the number of threadgroups per ZSTD block.
+ *
  *
  * Copyright (c) Microsoft. All rights reserved.
  * This code is licensed under the MIT License (MIT).
