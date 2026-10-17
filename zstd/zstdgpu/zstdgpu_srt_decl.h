@@ -424,7 +424,7 @@ ZSTDGPU_SRT_BEGIN(ComputeDestSequenceOffsets, Stage2)
     ZSTDGPU_SRT_CONST(uint32_t                              , workItemCount                 )
 ZSTDGPU_SRT_END()
 
-ZSTDGPU_SRT_BEGIN(MemsetMemcpy, Stage2)
+ZSTDGPU_SRT_BEGIN(CopyBlockBytes, Stage2)
     ZSTDGPU_SRT_USE_BIND_GROUP(DispatchIndirect)
     ZSTDGPU_SRT_USE_BIND_GROUP(FrameOutput)
     ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , BlockToCopyGroupPrefix        )

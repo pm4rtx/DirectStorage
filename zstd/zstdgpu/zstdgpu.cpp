@@ -94,7 +94,7 @@ ZSTDGPU_WARN_POP_MSVC()
 #include "ZstdGpuInitHuffmanTableAndDecompressLiterals.h"
 #include "ZstdGpuInitResources.h"
 #include "ZstdGpuMemset.h"
-#include "ZstdGpuMemsetMemcpy.h"
+#include "ZstdGpuCopyBlockBytes.h"
 #include "ZstdGpuParseCompressedBlocks.h"
 #include "ZstdGpuParseFrames.h"
 #include "ZstdGpuPrefixSequenceOffsets.h"
@@ -610,7 +610,7 @@ static uint32_t zstdgpu_Count_SRTs_Stage(uint32_t stageIndex)
     ZSTDGPU_KERNEL(InitHuffmanTableAndDecompressLiterals            ,   L"Init Huffman Table and Decompress Literals")                          \
     ZSTDGPU_KERNEL(InitResources                                    ,   L"Init Resources")                                                      \
     ZSTDGPU_KERNEL(Memset                                           ,   L"Memset")                                                              \
-    ZSTDGPU_KERNEL(MemsetMemcpy                                     ,   L"Memset-Memcpy")                                                       \
+    ZSTDGPU_KERNEL(CopyBlockBytes                                   ,   L"Copy Block Bytes")                                                    \
     ZSTDGPU_KERNEL(ParseCompressedBlocks                            ,   L"Parse Compressed Blocks")                                             \
     ZSTDGPU_KERNEL(ParseFrames                                      ,   L"Parse Frames")                                                        \
     ZSTDGPU_KERNEL(PrefixSequenceOffsets                            ,   L"Prefix Sequence Offsets")                                             \
@@ -652,7 +652,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_DISPATCH32_CMD_SIG(InitHuffmanTable)                  \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitHuffmanTableAndDecompressLiterals) \
     ZSTDGPU_DISPATCH32_CMD_SIG(Memset)                            \
-    ZSTDGPU_DISPATCH32_CMD_SIG(MemsetMemcpy)                      \
+    ZSTDGPU_DISPATCH32_CMD_SIG(CopyBlockBytes)                    \
     ZSTDGPU_DISPATCH32_CMD_SIG(PrefixSequenceOffsets)             \
     ZSTDGPU_DISPATCH32_CMD_SIG(PrefixSum)                         \
     ZSTDGPU_DISPATCH32_CMD_SIG(ComputePrefixSum)                  \
@@ -678,7 +678,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_KERNEL(InitHuffmanTableAndDecompressLiterals) \
     ZSTDGPU_KERNEL(InitResources)                   \
     ZSTDGPU_KERNEL(Memset)                          \
-    ZSTDGPU_KERNEL(MemsetMemcpy)                    \
+    ZSTDGPU_KERNEL(CopyBlockBytes)                  \
     ZSTDGPU_KERNEL(ParseCompressedBlocks)           \
     ZSTDGPU_KERNEL(ParseFrames)                     \
     ZSTDGPU_KERNEL(PrefixSequenceOffsets)           \
@@ -722,7 +722,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_KERNEL_SCOPE_X(ComputeDestBlockOffsets              , L"Compute Dest Block Offsets" )   \
     ZSTDGPU_KERNEL_SCOPE_X(UpdateDispatchArgs_AfterDecompressSeq, L"UpdateDispatchArgs:: After Decompress Sequences")  \
     ZSTDGPU_KERNEL_SCOPE_X(ExecuteSequences                     , L"ExecuteSequences"           )   \
-    ZSTDGPU_KERNEL_SCOPE_X(MemsetMemcpy                         , L"Memset/Memcpy Unc Blocks"   )   \
+    ZSTDGPU_KERNEL_SCOPE_X(CopyBlockBytes                       , L"Copy Block Bytes"           )   \
     ZSTDGPU_KERNEL_SCOPE_X(PrefixBlockSizes                     , L"Prefix Block Sizes"         )   \
     ZSTDGPU_KERNEL_SCOPE_X(PrefixBlockCopyGroupCounts           , L"Prefix Block Copy Groups Counts")
 
@@ -2727,12 +2727,12 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     }
 
     {
-        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Memset,Memcpy Unc blocks]");
-        ZSTDGPU_KERNEL_SCOPE(MemsetMemcpy, cmdList,
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Copy Block Bytes]");
+        ZSTDGPU_KERNEL_SCOPE(CopyBlockBytes, cmdList,
         {
             // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
-            zstdgpu_Bind_MemsetMemcpy(cmdList, tracker, req->srts, req->resData.gpuOnly);
-            zstdgpu_DispatchIndirect(cmdList, MemsetMemcpy, MemsetMemcpy);
+            zstdgpu_Bind_CopyBlockBytes(cmdList, tracker, req->srts, req->resData.gpuOnly);
+            zstdgpu_DispatchIndirect(cmdList, CopyBlockBytes, CopyBlockBytes);
         });
         PIXEndEvent(cmdList);
     }

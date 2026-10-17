@@ -324,7 +324,7 @@ static const uint32_t kzstdgpu_DispatchSlot_FinaliseSequenceOffsets      = 9;
 static const uint32_t kzstdgpu_DispatchSlot_PrefixSequenceOffsets        = 10;
 static const uint32_t kzstdgpu_DispatchSlot_ComputePrefixSum             = 11;
 static const uint32_t kzstdgpu_DispatchSlot_Prefix_AllBlockCount         = 12;
-static const uint32_t kzstdgpu_DispatchSlot_MemsetMemcpy                 = 13;
+static const uint32_t kzstdgpu_DispatchSlot_CopyBlockBytes               = 13;
 static const uint32_t kzstdgpu_DispatchSlot_ParseCompressedBlocks        = 14;
 static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockCount         = 15;
 static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockLookback      = 16;
@@ -437,9 +437,9 @@ static const uint32_t kzstdgpu_TgSizeX_FinaliseSequenceOffsets = 256;
 #endif
 
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
-static const uint32_t kzstdgpu_TgSizeX_MemsetMemcpy = 64;
+static const uint32_t kzstdgpu_TgSizeX_CopyBlockBytes = 64;
 #else
-static const uint32_t kzstdgpu_TgSizeX_MemsetMemcpy = 128;
+static const uint32_t kzstdgpu_TgSizeX_CopyBlockBytes = 128;
 #endif
 
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
@@ -449,7 +449,7 @@ static const uint32_t kzstdgpu_TgSizeX_ComputeDestBlockOffset = 128;
 #endif
 
 static const uint32_t kzstdgpu_CopyBlockBytes_BytesPerThread = 16;
-static const uint32_t kzstdgpu_CopyBlockBytes_BytesPerTGroup = kzstdgpu_TgSizeX_MemsetMemcpy * kzstdgpu_CopyBlockBytes_BytesPerThread;
+static const uint32_t kzstdgpu_CopyBlockBytes_BytesPerTGroup = kzstdgpu_TgSizeX_CopyBlockBytes * kzstdgpu_CopyBlockBytes_BytesPerThread;
 
 #define ZSTDGPU_TG_COUNT(elemCount, tgSize) (((elemCount) + (tgSize) - 1) / (tgSize))
 

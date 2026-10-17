@@ -1,5 +1,5 @@
 /**
- * ZstdGpuMemsetMemcpy.hlsl
+ * ZstdGpuCopyBlockBytes.hlsl
  *
  * A compute shader populating contiguous region of memory from an uncompressed ZSTD block (RAW or RLE)
  * or from a compressed ZSTD block. If the source is compressed ZSTD block,
@@ -29,14 +29,14 @@
 
 #include "../zstdgpu_shaders.h"
 
-#include "../.generated/ZstdGpuSrt_MemsetMemcpy.h"
+#include "../.generated/ZstdGpuSrt_CopyBlockBytes.h"
 
-[RootSignature(ZSTDGPU_SRT_RS_MemsetMemcpy)]
-[numthreads(kzstdgpu_TgSizeX_MemsetMemcpy, 1, 1)]
+[RootSignature(ZSTDGPU_SRT_RS_CopyBlockBytes)]
+[numthreads(kzstdgpu_TgSizeX_CopyBlockBytes, 1, 1)]
 void main(uint2 groupId2 : SV_GroupId, uint i : SV_GroupThreadId)
 {
-    zstdgpu_MemsetMemcpy_SRT srt;
+    zstdgpu_CopyBlockBytes_SRT srt;
     zstdgpu_Srt_Fill(srt);
 
-    zstdgpu_ShaderEntry_MemsetMemcpy(srt, zstdgpu_ConvertTo32BitGroupId(groupId2, srt.tgOffset), i);
+    zstdgpu_ShaderEntry_CopyBlockBytes(srt, zstdgpu_ConvertTo32BitGroupId(groupId2, srt.tgOffset), i);
 }

@@ -90,7 +90,7 @@ void main()
     }
     else ZSTDGPU_BRANCH if (srt.stage == 3)
     {
-        // The number of Groups required for `MemsetMemcpy` is only calculated after `DecompressSequences`
-        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_MemsetMemcpy, srt.inoutCounters[0].CopyBlockGroups, 1);
+        // The number of Groups required for `CopyBlockBytes` is only calculated after `DecompressSequences`
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_CopyBlockBytes, srt.inoutCounters[0].CopyBlockGroups, 1);
     }
 }

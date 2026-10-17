@@ -190,7 +190,7 @@ static const int16_t kzstdgpuFseProbsDefault[] =
 #include ".generated/ZstdGpuSrt_DecompressSequences.h"
 #include ".generated/ZstdGpuSrt_FinaliseSequenceOffsets.h"
 #include ".generated/ZstdGpuSrt_ComputeDestBlockOffsets.h"
-#include ".generated/ZstdGpuSrt_MemsetMemcpy.h"
+#include ".generated/ZstdGpuSrt_CopyBlockBytes.h"
 #include ".generated/ZstdGpuSrt_ExecuteSequences.h"
 
 #define VALIDATE(name, data) ZSTDGPU_ASSERT(ZSTDGPU_ENUM_CONST(Validate_Success) == zstdgpu_ReferenceStore_Validate_##name(data))
@@ -620,7 +620,7 @@ static uint32_t zstdgpu_Test_DecompressedData(const zstdgpu_ResourceDataCpu & cp
 
         if (failedUncBlockCount > 0)
         {
-            debugPrint(L"[FAIL] %u/%u UNC blocks decompressed on %s failed validation. Likely MemCpy/MemSet pass is broken, unless ExecuteSequence stomps the memory written by MemCpy/MemSet.\n", failedUncBlockCount, fbInfo.uncBlockCount, sourceName);
+            debugPrint(L"[FAIL] %u/%u UNC blocks decompressed on %s failed validation. Likely CopyBlockBytes pass is broken, unless ExecuteSequence stomps the memory written by CopyBlockBytes.\n", failedUncBlockCount, fbInfo.uncBlockCount, sourceName);
         }
 
         if (failedCmpBlockCount > 0)
@@ -941,11 +941,11 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
     memset(zstdCpu.UnCompressedFramesData, 0xCD, zstdUncompressedFramesByteCount);
 
     {
-        zstdgpu_MemsetMemcpy_SRT srt;
+        zstdgpu_CopyBlockBytes_SRT srt;
         zstdgpu_Srt_Fill(srt, zstdCpu, /* tgOffset */0, /* workItemCount */CNTRS(CopyBlockGroups));
         for (uint32_t groupId = 0; groupId < CNTRS(CopyBlockGroups); ++groupId)
         {
-            zstdgpu_ShaderEntry_MemsetMemcpy(srt, groupId, /* threadId */0);
+            zstdgpu_ShaderEntry_CopyBlockBytes(srt, groupId, /* threadId */0);
         }
     }
 
