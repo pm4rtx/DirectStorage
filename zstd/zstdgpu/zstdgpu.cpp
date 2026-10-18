@@ -61,7 +61,6 @@ ZSTDGPU_WARN_STOP_MSVC(4505) /**< warning C4505: 'function name': unreferenced f
 ZSTDGPU_WARN_POP_MSVC()
 
 #include "ZstdGpuComputeDestBlockOffsets.h"
-#include "ZstdGpuComputeDestSequenceOffsets.h"
 #include "ZstdGpuComputePrefixSum.h"
 #include "ZstdGpuDecodeHuffmanWeights.h"
 #include "ZstdGpuDecompressHuffmanWeights.h"
@@ -577,7 +576,6 @@ static uint32_t zstdgpu_Count_SRTs_Stage(uint32_t stageIndex)
 
 #define ZSTDGPU_KERNEL_LIST()                                                                                                           \
     ZSTDGPU_KERNEL(ComputeDestBlockOffsets                          ,   L"Compute Destination Block Offsets")                                   \
-    ZSTDGPU_KERNEL(ComputeDestSequenceOffsets                       ,   L"Compute Destination Sequence Offsets")                                \
     ZSTDGPU_KERNEL(ComputePrefixSum                                 ,   L"Compute Prefix of Literal and TG Count for Literal Decompression")    \
     ZSTDGPU_KERNEL(DecodeHuffmanWeights                             ,   L"Decode (from nibbles) Uncompressed Huffman Weights")                  \
     ZSTDGPU_KERNEL(DecompressHuffmanWeights                         ,   L"Decompress FSE-compressed Huffman Weights")                           \
@@ -668,7 +666,6 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
 
 #define ZSTDGPU_RUNTIME_KERNEL_LIST_SHARED()        \
     ZSTDGPU_KERNEL(ComputeDestBlockOffsets)         \
-    ZSTDGPU_KERNEL(ComputeDestSequenceOffsets)      \
     ZSTDGPU_KERNEL(ComputePrefixSum)                \
     ZSTDGPU_KERNEL(DecodeHuffmanWeights)            \
     ZSTDGPU_KERNEL(DecompressHuffmanWeights)        \
@@ -2072,31 +2069,6 @@ ZSTDGPU_ENUM(Status) zstdgpu_SubmitAllStagesWithInteralMemory(zstdgpu_PerRequest
 
 #endif
 
-static void zstdgpu_Dispatch32Bit(ID3D12GraphicsCommandList *cmdList, uint32_t tgCount, uint32_t rootParameterIndex, uint32_t rootParameterOffset)
-{
-#ifdef _GAMING_XBOX
-    cmdList->SetComputeRoot32BitConstant(rootParameterIndex, /* tgOffset*/0, rootParameterOffset);
-    cmdList->Dispatch(tgCount, 1, 1);
-#else
-    // NOTE(pamartis): on PC we should handle awkward D3D12 limitations
-    // TODO(pamartis): on PC we should be doing this kind of workaround for all dispatches
-    // NOTE: the split must match zstdgpu_ConvertTo32BitGroupId, which reconstructs the 32-bit id as
-    // tgOffset + (groupId.y << kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2) + groupId.x.
-    const uint32_t tgCountPerDim = 1u << kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2;
-    const uint32_t tgCountY = tgCount >> kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2;
-    const uint32_t tgCountX = tgCount & (tgCountPerDim - 1u);
-    // Dispatch_0
-    if (tgCountY > 0)
-    {
-        cmdList->SetComputeRoot32BitConstant(rootParameterIndex, /* tgOffset*/0, rootParameterOffset);
-        cmdList->Dispatch(tgCountPerDim, tgCountY, 1);
-    }
-    // Dispatch_1
-    cmdList->SetComputeRoot32BitConstant(rootParameterIndex, /* tgOffset*/tgCountY << kzstdgpu_MaxCount_ThreadGroupsPerDimensionLog2, rootParameterOffset);
-    cmdList->Dispatch(tgCountX, 1, 1);
-#endif
-}
-
 #define zstdgpu_DispatchIndirect(cmdList, kernelName, counterName) \
     cmdList->ExecuteIndirect(req->kernelName##_CmdSig, kzstdgpu_DispatchSlot_CmdsPerSlot, req->resData.gpuOnly.DispatchArgs, kzstdgpu_DispatchSlot_##counterName * kzstdgpu_DispatchSlot_StrideInUInt32 * sizeof(uint32_t), req->resData.gpuOnly.DispatchCnts, kzstdgpu_DispatchSlot_##counterName * sizeof(uint32_t));
 
@@ -2751,15 +2723,6 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         zstdgpu_BarrierTracker_Flush(cmdList, tracker, &req->resData.gpuOnly);
         PIXEndEvent(cmdList);
     }
-    if (0) /** IMPORTANT: requires DecompressedSequencesMLen to contain inclusive prefix of total sequence sizes */
-    {
-        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Compute Dest Sequence Offsets]");
-        zstdgpu_Bind_ComputeDestSequenceOffsets(cmdList, tracker, req->srts, req->resData.gpuOnly, /*tgOffset */0, /* workItemCount */req->zstdUncompressedSeqElemCountMax);
-
-        zstdgpu_Dispatch32Bit(cmdList, ZSTDGPU_TG_COUNT(req->zstdUncompressedSeqElemCountMax, 256), kzstdgpu_Srt_Const_Idx_ComputeDestSequenceOffsets_tgOffset, kzstdgpu_Srt_Const_Ofs_ComputeDestSequenceOffsets_tgOffset);
-
-        PIXEndEvent(cmdList);
-    }
     /* It's needed because Counters are updated during Seqeunce Execution */
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Readback Counters :: After Block Decompression]");
@@ -2804,8 +2767,16 @@ ZSTDGPU_API void zstdgpu_ReadbackGpuResults(zstdgpu_PerRequestContext req, ID3D1
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, HufWIdToHufLitId, ShaderCopyRead);
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, HufLitIdToLitStreamId, ShaderCopyRead);
 
+#if !ZSTDGPU_USE_SEQUENCE_DEST_OFFS
         zstdgpu_BarrierTracker_Flush(cmdList, tracker, &req->resData.gpuOnly);
+#endif
     }
+
+#if ZSTDGPU_USE_SEQUENCE_DEST_OFFS
+    zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, BlockDestOffs, ShaderCopyRead);
+    zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, DecompressedSequenceDstOfs, ShaderCopyRead);
+    zstdgpu_BarrierTracker_Flush(cmdList, tracker, &req->resData.gpuOnly);
+#endif
 
     #define ZSTDGPU_BUFFER(type, name) zstdgpu_PushReadback(name);
         ZSTDGPU_BUFFERS_LIST_READBACK_STAGE_0()

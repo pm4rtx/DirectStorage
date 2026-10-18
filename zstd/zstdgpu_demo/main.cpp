@@ -461,6 +461,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             zstdgpu_FinaliseSequenceOffsets_SRT srt;
             zstdgpu_Srt_Fill(srt, gpuReadbackRes, /* tgOffset */0, /* workItemCount */ gpuReadbackRes.Counters->Seq_Streams_DecodedItems);
             srt.inoutDecompressedSequenceOffs = cpuRes.DecompressedSequenceOffs;
+            srt.inoutDecompressedSequenceDstOfs = cpuRes.DecompressedSequenceDstOfs;
             for (uint32_t i = 0; i < gpuReadbackRes.Counters->Seq_Streams_DecodedItems; ++i)
             {
                 zstdgpu_ShaderEntry_FinaliseSequenceOffsets(srt, i);
@@ -475,6 +476,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             uint32_t *DecompressedSequenceLLen      = gpuReadbackRes.DecompressedSequenceLLen;
             uint32_t *DecompressedSequenceMLen      = gpuReadbackRes.DecompressedSequenceMLen;
             uint32_t *DecompressedSequenceOffs      = gpuReadbackRes.DecompressedSequenceOffs;
+            uint32_t *DecompressedSequenceDstOfs    = gpuReadbackRes.DecompressedSequenceDstOfs;
             zstdgpu_OffsetAndSize *BlocksUncRefs    = gpuReadbackRes.BlocksUncRefs;
             zstdgpu_CompressedBlockData *CompressedBlocks = gpuReadbackRes.CompressedBlocks;
 
@@ -483,6 +485,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             gpuReadbackRes.DecompressedSequenceLLen = cpuRes.DecompressedSequenceLLen;
             gpuReadbackRes.DecompressedSequenceMLen = cpuRes.DecompressedSequenceMLen;
             gpuReadbackRes.DecompressedSequenceOffs = cpuRes.DecompressedSequenceOffs;
+            gpuReadbackRes.DecompressedSequenceDstOfs = cpuRes.DecompressedSequenceDstOfs;
             gpuReadbackRes.BlocksUncRefs            = cpuRes.BlocksUncRefs;
             gpuReadbackRes.CompressedBlocks         = cpuRes.CompressedBlocks;
 
@@ -492,6 +495,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             gpuReadbackRes.DecompressedSequenceLLen = DecompressedSequenceLLen;
             gpuReadbackRes.DecompressedSequenceMLen = DecompressedSequenceMLen;
             gpuReadbackRes.DecompressedSequenceOffs = DecompressedSequenceOffs;
+            gpuReadbackRes.DecompressedSequenceDstOfs = DecompressedSequenceDstOfs;
             gpuReadbackRes.BlocksUncRefs            = BlocksUncRefs;
             gpuReadbackRes.CompressedBlocks         = CompressedBlocks;
         }
@@ -542,6 +546,20 @@ static void zstdgpu_Test_BlockPrefix(zstdgpu_ResourceDataCpu & cpuRes, zstdgpu_R
         }
         ZSTDGPU_ASSERT_MSG(cpuRefOffs == gpuRefOffs, "Copy reference offsets of block %u don't match between CPU and GPU", blockIdx);
     }
+
+#if ZSTDGPU_USE_SEQUENCE_DEST_OFFS
+    if (refAllBlockCount > 0)
+    {
+        ZSTDGPU_ASSERT_MSG(0 == memcmp(cpuRes.BlockDestOffs, gpuReadbackRes.BlockDestOffs, sizeof(cpuRes.BlockDestOffs[0]) * refAllBlockCount), "Destination offsets of blocks don't match between CPU and GPU");
+    }
+
+    const uint32_t refSequenceCount = cpuRes.Counters->Seq_Streams_DecodedItems;
+    ZSTDGPU_ASSERT_MSG(refSequenceCount == gpuReadbackRes.Counters->Seq_Streams_DecodedItems, "%u != %u", refSequenceCount, gpuReadbackRes.Counters->Seq_Streams_DecodedItems);
+    if (refSequenceCount > 0 && refSequenceCount == gpuReadbackRes.Counters->Seq_Streams_DecodedItems)
+    {
+        ZSTDGPU_ASSERT_MSG(0 == memcmp(cpuRes.DecompressedSequenceDstOfs, gpuReadbackRes.DecompressedSequenceDstOfs, sizeof(cpuRes.DecompressedSequenceDstOfs[0]) * refSequenceCount), "Destination offsets of sequences don't match between CPU and GPU");
+    }
+#endif
 }
 
 static uint32_t zstdgpu_Test_DecompressedData(const zstdgpu_ResourceDataCpu & cpuData,
