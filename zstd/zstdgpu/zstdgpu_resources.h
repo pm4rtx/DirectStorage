@@ -51,17 +51,18 @@
     ZSTDGPU_BUFFER(uint32_t                                 , DecompressedSequenceLLen      )   \
     ZSTDGPU_BUFFER(uint32_t                                 , DecompressedSequenceMLen      )   \
     ZSTDGPU_BUFFER(uint32_t                                 , DecompressedSequenceOffs      )   \
+    ZSTDGPU_BUFFER(uint32_t                                 , DecompressedSequenceDstOfs    )   \
     \
     ZSTDGPU_BUFFER(uint8_t                                  , UnCompressedFramesData        )   \
     ZSTDGPU_BUFFER(zstdgpu_OffsetAndSize                    , UnCompressedFramesRefs        )
 
-#define ZSTDGPU_BUFFERS_LIST_STAGE_2() /* empty so far*/\
-    ZSTDGPU_BUFFER(uint32_t                                 , DestSequenceOffsets           )
+#define ZSTDGPU_BUFFERS_LIST_STAGE_2() /* empty so far*/
 
 #define ZSTDGPU_BUFFERS_LIST_UPLOAD_STAGE_1() /* empty so far*/
 
 #define ZSTDGPU_BUFFERS_LIST_READBACK_STAGE_1()                                                 \
     ZSTDGPU_BUFFER(uint32_t                                 , BlockSizePrefix               )   \
+    ZSTDGPU_BUFFER(uint32_t                                 , BlockDestOffs                 )   \
     ZSTDGPU_BUFFER(uint32_t                                 , BlockToCopyGroupPrefix        )   \
     ZSTDGPU_BUFFER(uint32_t                                 , GlobalBlockIndexPerCmpBlock   )   \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset1      )   \
@@ -102,7 +103,6 @@
     ZSTDGPU_BUFFER(zstdgpu_OffsetAndSize                    , BlocksCMPRefs                 )
 
 #define ZSTDGPU_BUFFERS_LIST_STAGE_1() \
-    ZSTDGPU_BUFFER(uint32_t                                 , BlockDestOffs                 )   \
     ZSTDGPU_BUFFER(uint32_t                                 , HuffmanTableCodeAndSymbol     )   \
     ZSTDGPU_BUFFER(uint32_t                                 , HuffmanTableRankIndex         )   \
     ZSTDGPU_BUFFER(uint32_t                                 , HuffmanTableInfo              )   \
@@ -359,7 +359,11 @@ static void zstdgpu_ResourceInfo_Stage_2_InitSize(zstdgpu_ResourceInfo *outInfo,
     const uint32_t DecompressedSequenceLLen_Count   = sequencesCount;
     const uint32_t DecompressedSequenceMLen_Count   = DecompressedSequenceLLen_Count;
     const uint32_t DecompressedSequenceOffs_Count   = DecompressedSequenceLLen_Count;
-    const uint32_t DestSequenceOffsets_Count = DecompressedSequenceLLen_Count;
+#if ZSTDGPU_USE_SEQUENCE_DEST_OFFS
+    const uint32_t DecompressedSequenceDstOfs_Count = DecompressedSequenceLLen_Count;
+#else
+    const uint32_t DecompressedSequenceDstOfs_Count = 1;
+#endif
 
     ZSTDGPU_ALL_BUFFERS_LIST_STAGE_2()
 }

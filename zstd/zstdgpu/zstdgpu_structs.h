@@ -32,6 +32,10 @@
 #   define ZSTDGPU_USE_PREFIXED_LLEN_MLEN 0
 #endif
 
+#ifndef ZSTDGPU_USE_SEQUENCE_DEST_OFFS
+#   define ZSTDGPU_USE_SEQUENCE_DEST_OFFS (ZSTDGPU_USE_PREFIXED_LLEN_MLEN && 1)
+#endif
+
 #ifndef ZSTDGPU_UNUSED
 #   ifdef __hlsl_dx_compiler
 #       define ZSTDGPU_UNUSED(x) (void)0

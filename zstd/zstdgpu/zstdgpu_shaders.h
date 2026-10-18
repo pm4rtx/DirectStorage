@@ -3863,6 +3863,20 @@ static void zstdgpu_ShaderEntry_FinaliseSequenceOffsets(ZSTDGPU_PARAM_INOUT(zstd
 
     uint32_t offset = srt.inoutDecompressedSequenceOffs[seqIdx];
 
+#if ZSTDGPU_USE_SEQUENCE_DEST_OFFS
+    const uint32_t seqStreamCnt = srt.inCounters[0].Seq_Streams;
+    const uint32_t seqStreamIdx = zstdgpu_BinarySearch(srt.inPerSeqStreamSeqStart, 0, seqStreamCnt, seqIdx);
+    const uint32_t blockIdx     = srt.inSeqStreamToBlockId[seqStreamIdx];
+    {
+        uint32_t seqDstOfs = srt.inBlockDestOffs[blockIdx];
+        ZSTDGPU_BRANCH if (seqIdx > srt.inPerSeqStreamSeqStart[seqStreamIdx])
+        {
+            seqDstOfs += srt.inDecompressedSequenceMLen[seqIdx - 1u];
+        }
+        srt.inoutDecompressedSequenceDstOfs[seqIdx] = seqDstOfs;
+    }
+#endif
+
     // NOTE(pamartis): during "Sequence Decoding" we encode offsets so that they are either:
     //      - actual relative offsets (offset "N" means "-N" bytes relative to the current position in the output stream) with extra "+3" encoding.
     //      - "repeat" offsets relative to previous block's last sequence (not relative to previous sequence as original) minus some number of bytes
@@ -3870,9 +3884,11 @@ static void zstdgpu_ShaderEntry_FinaliseSequenceOffsets(ZSTDGPU_PARAM_INOUT(zstd
     // so here we check if they are actually "repeat" offsets relative to previous block's last sequence
     if (zstdgpu_DecodeSeqRepeatOffsetEncoded(offset) > 0)
     {
+#if !ZSTDGPU_USE_SEQUENCE_DEST_OFFS
         const uint32_t seqStreamCnt = srt.inCounters[0].Seq_Streams;
         const uint32_t seqStreamIdx = zstdgpu_BinarySearch(srt.inPerSeqStreamSeqStart, 0, seqStreamCnt, seqIdx);
         const uint32_t blockIdx     = srt.inSeqStreamToBlockId[seqStreamIdx];
+#endif
         const uint32_t frameIdx     = zstdgpu_BinarySearch(srt.inPerFrameBlockCountAll, 0, frameCnt, blockIdx);
         const uint32_t seqStreamIdxFirstInFrame = srt.inPerFrameSeqStreamMinIdx[frameIdx];
 

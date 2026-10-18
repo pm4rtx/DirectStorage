@@ -1127,6 +1127,9 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_DecompressedSequen
                     return ZSTDGPU_ENUM_CONST(Validate_Failed);
 
 #if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+#if ZSTDGPU_USE_SEQUENCE_DEST_OFFS
+                const uint32_t tstBlockDestOffs = tstData->BlockDestOffs[cmpBlockIndex];
+#endif
                 uint32_t expectedLLenPrefix = 0;
                 uint32_t expectedSizePrefix = 0;
                 for (uint32_t seqIdx = 0; seqIdx < refSeqCount; ++seqIdx)
@@ -1135,6 +1138,13 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_DecompressedSequen
                     {
                         return ZSTDGPU_ENUM_CONST(Validate_Failed);
                     }
+
+#if ZSTDGPU_USE_SEQUENCE_DEST_OFFS
+                    if (tstData->DecompressedSequenceDstOfs[tstSeqOffs + seqIdx] != tstBlockDestOffs + expectedSizePrefix)
+                    {
+                        return ZSTDGPU_ENUM_CONST(Validate_Failed);
+                    }
+#endif
 
                     expectedLLenPrefix += refData->DecompressedSequenceLLen[refSeqOffs + seqIdx];
                     expectedSizePrefix += refData->DecompressedSequenceLLen[refSeqOffs + seqIdx]
