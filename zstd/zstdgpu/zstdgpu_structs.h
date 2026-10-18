@@ -19,6 +19,19 @@
 
 #include "zstdgpu_shared_structs.h"
 
+#ifndef ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+    /**
+     *  This switch controls whether sequence literal and match lengths are stored as prefixes:
+     *      - `DecompressedSequenceLLen[i]` stores exclusive prefix sum of literal length
+     *      - `DecompressedSequenceMLen[i]` stores includes prefix sum of sequence sizes (sequence size is a sum of literal and match length)
+     *  the prefixes are restarted at stream/block boundaries
+     *
+     *  By default this switch is OFF (mostly because it makes sequence execution more expensive)
+     *  but it enables useful experimentation paths
+     */
+#   define ZSTDGPU_USE_PREFIXED_LLEN_MLEN 0
+#endif
+
 #ifndef ZSTDGPU_UNUSED
 #   ifdef __hlsl_dx_compiler
 #       define ZSTDGPU_UNUSED(x) (void)0

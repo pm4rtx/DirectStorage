@@ -3406,13 +3406,20 @@ static void zstdgpu_ShaderEntry_DecompressSequences_MultiStream(ZSTDGPU_PARAM_IN
             );
             offs = zstdgpu_UpdatePreviousAndRecomputeIncoming(offset1, offset2, offset3, offs, llen);
 
-            // TODO: output totalSize per iteration to automatically compute prefix
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+            // NOTE: exclusive literal-length prefix and inclusive `llen + mlen` prefix within the stream
+            srt.inoutDecompressedSequenceLLen[i] = totalLLen;
+#endif
             totalSize += llen + mlen;
             totalMLen += mlen;
             totalLLen += llen;
 
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+            srt.inoutDecompressedSequenceMLen[i] = totalSize;
+#else
             srt.inoutDecompressedSequenceLLen[i] = llen;
             srt.inoutDecompressedSequenceMLen[i] = mlen;
+#endif
             srt.inoutDecompressedSequenceOffs[i] = offs;
 
             if (i == outputEnd - 1u)
@@ -3562,11 +3569,19 @@ static void zstdgpu_ShaderEntry_DecompressSequences_SingleStream(ZSTDGPU_PARAM_I
         offs = zstdgpu_UpdatePreviousAndRecomputeIncoming(offset1, offset2, offset3, offs, llen);
 
         /*totalSize += llen + mlen;*/
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+        // NOTE: exclusive literal-length prefix and inclusive `llen + mlen` prefix within the stream
+        srt.inoutDecompressedSequenceLLen[i] = totalLLen;
+#endif
         totalMLen += mlen;
         totalLLen += llen;
 
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+        srt.inoutDecompressedSequenceMLen[i] = totalLLen + totalMLen;
+#else
         srt.inoutDecompressedSequenceLLen[i] = llen;
         srt.inoutDecompressedSequenceMLen[i] = mlen;
+#endif
         srt.inoutDecompressedSequenceOffs[i] = offs;
 
         if (++i == outputEnd)
@@ -3728,15 +3743,26 @@ static void zstdgpu_ShaderEntry_DecompressSequences_MultiStream_LdsOutCache(ZSTD
                 );
                 offs = zstdgpu_UpdatePreviousAndRecomputeIncoming(offset1, offset2, offset3, offs, llen);
 
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+                // NOTE: exclusive literal-length prefix and inclusive `llen + mlen` prefix within the stream (carried across batches)
+                const uint32_t storedLLen = totalLLen;
+#else
+                const uint32_t storedLLen = llen;
+#endif
                 totalMLen += mlen;
                 totalLLen += llen;
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+                const uint32_t storedMLen = totalLLen + totalMLen;
+#else
+                const uint32_t storedMLen = mlen;
+#endif
 
                 const uint32_t seqIdxInBatch = seqIdx - seqIdxBatchBeg;
 
                 //
                 const uint32_t seqIdxInCache = (seqIdxInBatch & ~kStoreCacheBankMask) + ((seqIdxInBatch + seqStreamIdxInGroup) & kStoreCacheBankMask);
-                zstdgpu_LdsStoreU32(GS_LLenCache + storeCacheThreadOffset + seqIdxInCache, llen);
-                zstdgpu_LdsStoreU32(GS_MLenCache + storeCacheThreadOffset + seqIdxInCache, mlen);
+                zstdgpu_LdsStoreU32(GS_LLenCache + storeCacheThreadOffset + seqIdxInCache, storedLLen);
+                zstdgpu_LdsStoreU32(GS_MLenCache + storeCacheThreadOffset + seqIdxInCache, storedMLen);
                 zstdgpu_LdsStoreU32(GS_OffsCache + storeCacheThreadOffset + seqIdxInCache, offs);
 
                 if (++seqIdx < seqIdxEnd)
@@ -3933,11 +3959,44 @@ struct zstdgpu_Sequence
     uint32_t offs;
 };
 
-static zstdgpu_Sequence zstdgpu_LoadSequence(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteSequences_SRT) srt, uint32_t seqIdx)
+static zstdgpu_Sequence zstdgpu_LoadSequence(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteSequences_SRT) srt,
+                                             uint32_t seqIdx,
+                                             uint32_t seqBeg,
+                                             uint32_t seqEnd,
+                                             uint32_t seqLLenTotal)
 {
     zstdgpu_Sequence seq;
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+    ZSTDGPU_ASSERT(seqIdx >= seqBeg && seqIdx < seqEnd);
+
+    // recompute LLen
+    const uint32_t llenPrefixBeg = srt.inDecompressedSequenceLLen[seqIdx];
+    uint32_t llenPrefixEnd = seqLLenTotal;
+    ZSTDGPU_BRANCH if (seqIdx + 1u < seqEnd)
+    {
+        llenPrefixEnd = srt.inDecompressedSequenceLLen[seqIdx + 1u];
+    }
+    ZSTDGPU_ASSERT(llenPrefixBeg <= llenPrefixEnd);
+    seq.llen = llenPrefixEnd - llenPrefixBeg;
+
+    // recompute MLen
+    uint32_t sizePrefixBeg = 0;
+    uint32_t sizePrefixEnd = srt.inDecompressedSequenceMLen[seqIdx];
+    ZSTDGPU_BRANCH if (seqIdx > seqBeg)
+    {
+        sizePrefixBeg = srt.inDecompressedSequenceMLen[seqIdx - 1u];
+    }
+    ZSTDGPU_ASSERT(sizePrefixBeg <= sizePrefixEnd);
+    ZSTDGPU_ASSERT(sizePrefixBeg + seq.llen <= sizePrefixEnd);
+    seq.mlen = sizePrefixEnd - sizePrefixBeg - seq.llen;
+#else
+    ZSTDGPU_UNUSED(seqBeg);
+    ZSTDGPU_UNUSED(seqEnd);
+    ZSTDGPU_UNUSED(seqLLenTotal);
+
     seq.mlen = srt.inDecompressedSequenceMLen[seqIdx];
     seq.llen = srt.inDecompressedSequenceLLen[seqIdx];
+#endif
     seq.offs = srt.inDecompressedSequenceOffs[seqIdx];
     return seq;
 }
@@ -4069,13 +4128,15 @@ static void zstdgpu_ExecuteSequences_Lit(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteSequ
                                          uint32_t dstOfs,
                                          uint32_t dstEnd,
                                          uint32_t seqIdx,
-                                         uint32_t seqEnd)
+                                         uint32_t seqEnd,
+                                         uint32_t seqLLenTotal)
 {
+    const uint32_t seqBeg = seqIdx;
     // NOTE(pamartis): LOOP is used to make sure validation layer doesn't complain about accessing `inDecompressedSequence*`
     ZSTDGPU_LOOP for (; seqIdx < seqEnd; ++seqIdx)
     {
         // NOTE(pamartis): these are still uniform variables HLSL has no way of enforcing....
-        zstdgpu_Sequence seq = zstdgpu_LoadSequence(srt, seqIdx);
+        zstdgpu_Sequence seq = zstdgpu_LoadSequence(srt, seqIdx, seqBeg, seqEnd, seqLLenTotal);
 
         zstdgpu_MemCpy_DstSrc(srt.inoutUnCompressedFramesData, dstOfs, litBuf, litOfs, seq.llen, dstEnd);
         zstdgpu_MatchCopy(srt.inoutUnCompressedFramesData, dstOfs, seq, dstEnd);
@@ -4084,8 +4145,6 @@ static void zstdgpu_ExecuteSequences_Lit(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteSequ
 
 static void zstdgpu_ShaderEntry_ExecuteSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteSequences_SRT) srt)
 {
-    const uint32_t seqStreamCnt = srt.inoutCounters[0].Seq_Streams;
-
     const uint32_t frameCnt = srt.inoutCounters[0].Frames;
 
     uint32_t frameIdx = 0;
@@ -4132,10 +4191,16 @@ static void zstdgpu_ShaderEntry_ExecuteSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_Exe
 
         uint32_t seqOfs = 0;
         uint32_t seqEnd = 0;
+        uint32_t seqLLenTotal = 0;
         // NOTE(pamartis): BRANCH is used to make sure validation layer doesn't complain about accessing `inPerSeqStreamSeqStart`
         ZSTDGPU_BRANCH if (seqStreamIdx != ~0u)
         {
             zstdgpu_GetSequenceBeginEnd(seqOfs, seqEnd, seqStreamIdx, srt.inPerSeqStreamSeqStart, srt.inoutCounters);
+#if ZSTDGPU_USE_PREFIXED_LLEN_MLEN
+            const uint32_t seqMLenTotal = blockSize - zstdgpu_DecodeLitSize(literal.size);
+            const uint32_t seqByteTotal = srt.inDecompressedSequenceMLen[seqEnd - 1u];
+            seqLLenTotal = seqByteTotal - seqMLenTotal;
+#endif
         }
 
         const uint32_t litType = WaveReadLaneFirst(zstdgpu_DecodeLitType(literal.size));
@@ -4143,11 +4208,11 @@ static void zstdgpu_ShaderEntry_ExecuteSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_Exe
 
         if (zstdgpu_IsLitTypeCmp(litType))
         {
-            zstdgpu_ExecuteSequences_Lit(srt, srt.inDecompressedLiterals, litOffs, blockByteBeg, blockByteEnd, seqOfs, seqEnd);
+            zstdgpu_ExecuteSequences_Lit(srt, srt.inDecompressedLiterals, litOffs, blockByteBeg, blockByteEnd, seqOfs, seqEnd, seqLLenTotal);
         }
         else if (zstdgpu_IsLitTypeRaw(litType))
         {
-            zstdgpu_ExecuteSequences_Lit(srt, srt.inCompressedData, litOffs, blockByteBeg, blockByteEnd, seqOfs, seqEnd);
+            zstdgpu_ExecuteSequences_Lit(srt, srt.inCompressedData, litOffs, blockByteBeg, blockByteEnd, seqOfs, seqEnd, seqLLenTotal);
         }
         else if (zstdgpu_IsLitTypeRle(litType))
         {
@@ -4159,7 +4224,7 @@ static void zstdgpu_ShaderEntry_ExecuteSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_Exe
             ZSTDGPU_LOOP for (uint32_t seqIdx = seqOfs; seqIdx < seqEnd; ++seqIdx)
             {
                 // NOTE(pamartis): these are still uniform variables HLSL has no way of enforcing....
-                zstdgpu_Sequence seq = zstdgpu_LoadSequence(srt, seqIdx);
+                zstdgpu_Sequence seq = zstdgpu_LoadSequence(srt, seqIdx, seqOfs, seqEnd, seqLLenTotal);
 
                 zstdgpu_MemSet(srt.inoutUnCompressedFramesData, blockByteCur, symbol, seq.llen, blockByteEnd);
                 zstdgpu_MatchCopy(srt.inoutUnCompressedFramesData, blockByteCur, seq, blockByteEnd);
