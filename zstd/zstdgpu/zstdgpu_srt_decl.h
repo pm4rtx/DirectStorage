@@ -414,6 +414,22 @@ ZSTDGPU_SRT_BEGIN(ExecuteSequences, Stage2)
     ZSTDGPU_SRT_BUF_RO_STRUCT(zstdgpu_CompressedBlockData   , CompressedBlocks              )
 ZSTDGPU_SRT_END()
 
+ZSTDGPU_SRT_BEGIN(ExecuteMatches, Stage2)
+    ZSTDGPU_SRT_USE_BIND_GROUP(FrameOutput)
+
+    ZSTDGPU_SRT_BUF_RW_STRUCT(zstdgpu_Counters              , Counters                      )
+
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , PerFrameBlockCountCMP         )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , BlockSizePrefix               )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , BlockDestOffs                 )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , DecompressedSequenceLLen      )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , DecompressedSequenceMLen      )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , DecompressedSequenceOffs      )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , GlobalBlockIndexPerCmpBlock   )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , PerSeqStreamSeqStart          )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(zstdgpu_CompressedBlockData   , CompressedBlocks              )
+ZSTDGPU_SRT_END()
+
 ZSTDGPU_SRT_BEGIN(CopyBlockBytes, Stage2)
     ZSTDGPU_SRT_USE_BIND_GROUP(DispatchIndirect)
     ZSTDGPU_SRT_USE_BIND_GROUP(FrameOutput)

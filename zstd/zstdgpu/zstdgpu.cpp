@@ -84,6 +84,9 @@ ZSTDGPU_WARN_POP_MSVC()
 #include "ZstdGpuDecompressSequences_SingleStream_ScalarFseLoad128.h"
 #include "ZstdGpuDecompressSequences_SingleStream_ScalarFseLoad64.h"
 #include "ZstdGpuDecompressSequences_SingleStream_ScalarFseLoad32.h"
+#include "ZstdGpuExecuteMatches128.h"
+#include "ZstdGpuExecuteMatches64.h"
+#include "ZstdGpuExecuteMatches32.h"
 #include "ZstdGpuExecuteSequences128.h"
 #include "ZstdGpuExecuteSequences64.h"
 #include "ZstdGpuExecuteSequences32.h"
@@ -599,6 +602,9 @@ static uint32_t zstdgpu_Count_SRTs_Stage(uint32_t stageIndex)
     ZSTDGPU_KERNEL(DecompressSequences_MultiStream_4_LdsOutCache_64 ,   L"Decompress Sequences (Multi-Stream, Threads Per Stream=4, LDS Out Cache= 64 Sequences)")    \
     ZSTDGPU_KERNEL(DecompressSequences_MultiStream_4_LdsOutCache_32 ,   L"Decompress Sequences (Multi-Stream, Threads Per Stream=4, LDS Out Cache= 32 Sequences)")    \
     ZSTDGPU_KERNEL(DecompressSequences_MultiStream_2_LdsOutCache_32 ,   L"Decompress Sequences (Multi-Stream, Threads Per Stream=2, LDS Out Cache= 32 Sequences)")    \
+    ZSTDGPU_KERNEL(ExecuteMatches128                                ,   L"Execute Matches 128")                                                 \
+    ZSTDGPU_KERNEL(ExecuteMatches64                                 ,   L"Execute Matches 64")                                                  \
+    ZSTDGPU_KERNEL(ExecuteMatches32                                 ,   L"Execute Matches 32")                                                  \
     ZSTDGPU_KERNEL(ExecuteSequences128                              ,   L"Execute Sequences 128")                                               \
     ZSTDGPU_KERNEL(ExecuteSequences64                               ,   L"Execute Sequences 64")                                                \
     ZSTDGPU_KERNEL(ExecuteSequences32                               ,   L"Execute Sequences 32")                                                \
@@ -686,6 +692,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
 #define ZSTDGPU_RUNTIME_KERNEL_LIST_SPECIALISED()   \
     ZSTDGPU_KERNEL(DecompressLiterals)              \
     ZSTDGPU_KERNEL(DecompressSequences)             \
+    ZSTDGPU_KERNEL(ExecuteMatches)                  \
     ZSTDGPU_KERNEL(ExecuteSequences)
 
 #define ZSTDGPU_RUNTIME_KERNEL_LIST()           \
@@ -718,6 +725,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_KERNEL_SCOPE_X(FinaliseSequenceOffsets              , L"Finalise Sequence Offsets"  )   \
     ZSTDGPU_KERNEL_SCOPE_X(ComputeDestBlockOffsets              , L"Compute Dest Block Offsets" )   \
     ZSTDGPU_KERNEL_SCOPE_X(UpdateDispatchArgs_AfterDecompressSeq, L"UpdateDispatchArgs:: After Decompress Sequences")  \
+    ZSTDGPU_KERNEL_SCOPE_X(ExecuteMatches                       , L"Execute Matches"            )   \
     ZSTDGPU_KERNEL_SCOPE_X(ExecuteSequences                     , L"ExecuteSequences"           )   \
     ZSTDGPU_KERNEL_SCOPE_X(CopyBlockBytes                       , L"Copy Block Bytes"           )   \
     ZSTDGPU_KERNEL_SCOPE_X(PrefixBlockSizes                     , L"Prefix Block Sizes"         )   \
@@ -912,6 +920,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
         context->DecompressLiterals_LdsStoreCache_StreamsPerGroup = 16;
         ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_SingleStream_LdsFseCache32);
         context->DecompressSequences_StreamsPerGroup = 1;
+        ZSTDGPU_KERNEL_MAP(ExecuteMatches, ExecuteMatches64);
         ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences64);
 #else
         D3D12_FEATURE_DATA_D3D12_OPTIONS1 featureOptions1;
@@ -936,6 +945,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
             context->DecompressLiterals_LdsStoreCache_StreamsPerGroup = 16;
             ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_SingleStream_ScalarFseLoad32);
             context->DecompressSequences_StreamsPerGroup = 1;
+            ZSTDGPU_KERNEL_MAP(ExecuteMatches, ExecuteMatches64);
             ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences64);
         }
         else if (desc.VendorId == 0x10de)
@@ -954,6 +964,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
             ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_MultiStream_4_LdsOutCache_32);
             context->DecompressSequences_StreamsPerGroup = kzstdgpu_TgSizeX_DecompressSequences / 4u;
 
+            ZSTDGPU_KERNEL_MAP(ExecuteMatches, ExecuteMatches64);
             ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences64);
         }
         else if (featureOptions1.WaveLaneCountMax == 128)
@@ -962,6 +973,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
             context->DecompressLiterals_LdsStoreCache_StreamsPerGroup = 8;
             ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_SingleStream_LdsFseCache128);
             context->DecompressSequences_StreamsPerGroup = 1;
+            ZSTDGPU_KERNEL_MAP(ExecuteMatches, ExecuteMatches128);
             ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences128);
         }
         else //if (desc.VendorId == 0x8086 || featureOptions1.WaveLaneCountMax == 32)
@@ -970,6 +982,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_CreatePersistentContext(zstdgpu_PersistentContext *
             context->DecompressLiterals_LdsStoreCache_StreamsPerGroup = 16;
             ZSTDGPU_KERNEL_MAP(DecompressSequences, DecompressSequences_MultiStream_4_LdsOutCache_32);
             context->DecompressSequences_StreamsPerGroup = kzstdgpu_TgSizeX_DecompressSequences / 4u;
+            ZSTDGPU_KERNEL_MAP(ExecuteMatches, ExecuteMatches32);
             ZSTDGPU_KERNEL_MAP(ExecuteSequences, ExecuteSequences32);
         }
 #endif

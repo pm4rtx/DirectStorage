@@ -36,6 +36,16 @@
 #   define ZSTDGPU_USE_SEQUENCE_DEST_OFFS (ZSTDGPU_USE_PREFIXED_LLEN_MLEN && 1)
 #endif
 
+#ifndef ZSTDGPU_ENABLE_PARALLEL_LITERALS
+/**
+ *  This switch controls how the sequence-covered literal bytes of compressed blocks are copied:
+ *      - 0: [Execute Sequences] copies them serially together with the match copies,
+ *      - 1: sequence-covered literal bytes are copied in parallel by a separate pass
+ *  In both modes trailing literals (and all literals of a block without sequences) are copied by [Copy Block Bytes].
+ */
+#   define ZSTDGPU_ENABLE_PARALLEL_LITERALS (ZSTDGPU_USE_PREFIXED_LLEN_MLEN && 1)
+#endif
+
 #ifndef ZSTDGPU_UNUSED
 #   ifdef __hlsl_dx_compiler
 #       define ZSTDGPU_UNUSED(x) (void)0

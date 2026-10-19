@@ -3975,7 +3975,8 @@ struct zstdgpu_Sequence
     uint32_t offs;
 };
 
-static zstdgpu_Sequence zstdgpu_LoadSequence(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteSequences_SRT) srt,
+template<typename SRT>
+static zstdgpu_Sequence zstdgpu_LoadSequence(ZSTDGPU_PARAM_INOUT(SRT) srt,
                                              uint32_t seqIdx,
                                              uint32_t seqBeg,
                                              uint32_t seqEnd,
