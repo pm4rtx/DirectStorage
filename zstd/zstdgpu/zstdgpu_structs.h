@@ -36,14 +36,14 @@
 #   define ZSTDGPU_USE_SEQUENCE_DEST_OFFS (ZSTDGPU_USE_PREFIXED_LLEN_MLEN && 1)
 #endif
 
-#ifndef ZSTDGPU_ENABLE_PARALLEL_LITERALS
+#ifndef ZSTDGPU_USE_PARALLEL_LITERALS
 /**
  *  This switch controls how the sequence-covered literal bytes of compressed blocks are copied:
  *      - 0: [Execute Sequences] copies them serially together with the match copies,
  *      - 1: sequence-covered literal bytes are copied in parallel by a separate pass
  *  In both modes trailing literals (and all literals of a block without sequences) are copied by [Copy Block Bytes].
  */
-#   define ZSTDGPU_ENABLE_PARALLEL_LITERALS (ZSTDGPU_USE_PREFIXED_LLEN_MLEN && 1)
+#   define ZSTDGPU_USE_PARALLEL_LITERALS (ZSTDGPU_USE_SEQUENCE_DEST_OFFS && 1)
 #endif
 
 #ifndef ZSTDGPU_UNUSED
@@ -333,6 +333,7 @@ typedef struct zstdgpu_Counters
     uint32_t Blocks_UNC;
     uint32_t Blocks_CMP;
     uint32_t CopyBlockGroups;
+    uint32_t CopyLiteralGroups;
     uint32_t Frames;
     uint32_t Frames_UncompressedByteSize;
     uint32_t Frames_ExecuteSequences;
@@ -351,13 +352,15 @@ static const uint32_t kzstdgpu_DispatchSlot_FinaliseSequenceOffsets      = 9;
 static const uint32_t kzstdgpu_DispatchSlot_PrefixSequenceOffsets        = 10;
 static const uint32_t kzstdgpu_DispatchSlot_ComputePrefixSum             = 11;
 static const uint32_t kzstdgpu_DispatchSlot_Prefix_AllBlockCount         = 12;
-static const uint32_t kzstdgpu_DispatchSlot_CopyBlockBytes               = 13;
-static const uint32_t kzstdgpu_DispatchSlot_ParseCompressedBlocks        = 14;
-static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockCount         = 15;
-static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockLookback      = 16;
-static const uint32_t kzstdgpu_DispatchSlot_Memset_AllBlockLookback      = 17;
-static const uint32_t kzstdgpu_DispatchSlot_PropagateFseIndex            = 18;
-static const uint32_t kzstdgpu_DispatchSlot_Count                        = 19;
+static const uint32_t kzstdgpu_DispatchSlot_Prefix_SeqBlockCount         = 13;
+static const uint32_t kzstdgpu_DispatchSlot_CopyBlockBytes               = 14;
+static const uint32_t kzstdgpu_DispatchSlot_CopyLiteralBytes             = 15;
+static const uint32_t kzstdgpu_DispatchSlot_ParseCompressedBlocks        = 16;
+static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockCount         = 17;
+static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockLookback      = 18;
+static const uint32_t kzstdgpu_DispatchSlot_Memset_AllBlockLookback      = 19;
+static const uint32_t kzstdgpu_DispatchSlot_PropagateFseIndex            = 20;
+static const uint32_t kzstdgpu_DispatchSlot_Count                        = 21;
 
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
 static const uint32_t kzstdgpu_DispatchSlot_CmdsPerSlot                  = 1;
@@ -477,6 +480,15 @@ static const uint32_t kzstdgpu_TgSizeX_ComputeDestBlockOffset = 128;
 
 static const uint32_t kzstdgpu_CopyBlockBytes_BytesPerThread = 16;
 static const uint32_t kzstdgpu_CopyBlockBytes_BytesPerTGroup = kzstdgpu_TgSizeX_CopyBlockBytes * kzstdgpu_CopyBlockBytes_BytesPerThread;
+
+#if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
+static const uint32_t kzstdgpu_TgSizeX_CopyLiteralBytes = 64;
+#else
+static const uint32_t kzstdgpu_TgSizeX_CopyLiteralBytes = 128;
+#endif
+
+static const uint32_t kzstdgpu_CopyLiteralBytes_BytesPerThread = 4;
+static const uint32_t kzstdgpu_CopyLiteralBytes_BytesPerTGroup = kzstdgpu_TgSizeX_CopyLiteralBytes * kzstdgpu_CopyLiteralBytes_BytesPerThread;
 
 #define ZSTDGPU_TG_COUNT(elemCount, tgSize) (((elemCount) + (tgSize) - 1) / (tgSize))
 

@@ -398,6 +398,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             srt.inoutBlockSizePrefix            = cpuRes.BlockSizePrefix;
             srt.inoutBlockToCopyGroupPrefix     = cpuRes.BlockToCopyGroupPrefix;
             srt.inoutBlocksUncRefs              = cpuRes.BlocksUncRefs;
+            srt.inoutSeqStreamToLitCopyGroupPrefix = cpuRes.SeqStreamToLitCopyGroupPrefix;
 
             // NOTE: `Counters` are read and accumulated by `DecompressSequences`, so the simulation accumulates into a copy of GPU counters
             zstdgpu_Counters counters = *gpuReadbackRes.Counters;
@@ -409,6 +410,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
 
             // NOTE(pavel): zero the counter and re-compute the number of groups
             counters.CopyBlockGroups = 0;
+            counters.CopyLiteralGroups = 0;
 
             for (uint32_t blockIdx = 0, cmpBlockIdx = 0; blockIdx < allBlockCount; ++blockIdx)
             {
@@ -439,11 +441,15 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             {
                 zstdgpu_ShaderEntry_DecompressSequences_MultiStream(srt, /* groupId */ i, /* threadId */ 0, /* streamsPerGroup */ 1);
             }
-            // CPU equivalent of [Prefix Block Copy Group Counts] on the simulated counts
-            const uint32_t copyGroupCount = zstdgpu_ExclusivePrefixSumCpu(cpuRes.BlockToCopyGroupPrefix, allBlockCount);
-            ZSTDGPU_ASSERT_MSG(copyGroupCount == counters.CopyBlockGroups, "%u != %u", copyGroupCount, counters.CopyBlockGroups);
-            // Compute prefix sum of block sizes
-
+            // CPU equivalent of [Prefix Block/Literal Copy Group Counts] on the simulated counts
+            const uint32_t copyBlockGroupCount = zstdgpu_ExclusivePrefixSumCpu(cpuRes.BlockToCopyGroupPrefix, allBlockCount);
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+            const uint32_t copyLiteralGroupCount = zstdgpu_ExclusivePrefixSumCpu(cpuRes.SeqStreamToLitCopyGroupPrefix, cpuRes.Counters->Seq_Streams);
+#endif
+            ZSTDGPU_ASSERT_MSG(copyBlockGroupCount == counters.CopyBlockGroups, "%u != %u", copyBlockGroupCount, counters.CopyBlockGroups);
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+            ZSTDGPU_ASSERT_MSG(copyLiteralGroupCount == counters.CopyLiteralGroups, "%u != %u", copyLiteralGroupCount, counters.CopyLiteralGroups);
+#endif
             // FIXUP(pamartis): because after `DecompreSequences` execution 'BlockSizePrefix' contain actual size of the block,
             // not the prefix (it's computed after `DecompreSequences`  on GPU) we update the prefix manually
             uint32_t blockSizePrefix = 0;
@@ -479,6 +485,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             uint32_t *DecompressedSequenceDstOfs    = gpuReadbackRes.DecompressedSequenceDstOfs;
             zstdgpu_OffsetAndSize *BlocksUncRefs    = gpuReadbackRes.BlocksUncRefs;
             zstdgpu_CompressedBlockData *CompressedBlocks = gpuReadbackRes.CompressedBlocks;
+            uint32_t *SeqStreamToLitCopyGroupPrefix        = gpuReadbackRes.SeqStreamToLitCopyGroupPrefix;
 
             // NOTE: simulated copy references are validated against the entire literals they were seeded from
             gpuReadbackRes.CompressedData           = cpuRes.CompressedData;
@@ -488,6 +495,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             gpuReadbackRes.DecompressedSequenceDstOfs = cpuRes.DecompressedSequenceDstOfs;
             gpuReadbackRes.BlocksUncRefs            = cpuRes.BlocksUncRefs;
             gpuReadbackRes.CompressedBlocks         = cpuRes.CompressedBlocks;
+            gpuReadbackRes.SeqStreamToLitCopyGroupPrefix   = cpuRes.SeqStreamToLitCopyGroupPrefix;
 
             VALIDATE(DecompressedSequences, &gpuReadbackRes);
 
@@ -498,6 +506,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             gpuReadbackRes.DecompressedSequenceDstOfs = DecompressedSequenceDstOfs;
             gpuReadbackRes.BlocksUncRefs            = BlocksUncRefs;
             gpuReadbackRes.CompressedBlocks         = CompressedBlocks;
+            gpuReadbackRes.SeqStreamToLitCopyGroupPrefix   = SeqStreamToLitCopyGroupPrefix;
         }
 
     }
@@ -558,6 +567,15 @@ static void zstdgpu_Test_BlockPrefix(zstdgpu_ResourceDataCpu & cpuRes, zstdgpu_R
     if (refSequenceCount > 0 && refSequenceCount == gpuReadbackRes.Counters->Seq_Streams_DecodedItems)
     {
         ZSTDGPU_ASSERT_MSG(0 == memcmp(cpuRes.DecompressedSequenceDstOfs, gpuReadbackRes.DecompressedSequenceDstOfs, sizeof(cpuRes.DecompressedSequenceDstOfs[0]) * refSequenceCount), "Destination offsets of sequences don't match between CPU and GPU");
+    }
+#endif
+
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+    const uint32_t refSeqBlockCount = cpuRes.Counters->Seq_Streams;
+    ZSTDGPU_ASSERT_MSG(refSeqBlockCount == gpuReadbackRes.Counters->Seq_Streams, "%u != %u", refSequenceCount, gpuReadbackRes.Counters->Seq_Streams);
+    if (cpuRes.Counters->Seq_Streams > 0 && cpuRes.Counters->Seq_Streams == gpuReadbackRes.Counters->Seq_Streams)
+    {
+        ZSTDGPU_ASSERT_MSG(0 == memcmp(cpuRes.SeqStreamToLitCopyGroupPrefix, gpuReadbackRes.SeqStreamToLitCopyGroupPrefix, sizeof(cpuRes.SeqStreamToLitCopyGroupPrefix[0]) * cpuRes.Counters->Seq_Streams), "Literal group prefix of compressed blocks with sequences doesn't match between CPU and GPU");
     }
 #endif
 }
@@ -876,9 +894,14 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
             }
         }
 
-        // CPU equivalent of [Prefix Block Copy Group Counts]
-        const uint32_t copyGroupCount = zstdgpu_ExclusivePrefixSumCpu(zstdCpu.BlockToCopyGroupPrefix, zstdAllBlockCount);
-        ZSTDGPU_ASSERT_MSG(copyGroupCount == CNTRS(CopyBlockGroups), "%u != %u", copyGroupCount, CNTRS(CopyBlockGroups));
+        // CPU equivalent of [Prefix Block/Literal Copy Group Counts]
+        const uint32_t copyBlockGroupCount = zstdgpu_ExclusivePrefixSumCpu(zstdCpu.BlockToCopyGroupPrefix, zstdAllBlockCount);
+        ZSTDGPU_ASSERT_MSG(copyBlockGroupCount == CNTRS(CopyBlockGroups), "%u != %u", copyBlockGroupCount, CNTRS(CopyBlockGroups));
+
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+        const uint32_t copyLiteralGroupCount = zstdgpu_ExclusivePrefixSumCpu(zstdCpu.SeqStreamToLitCopyGroupPrefix, CNTRS(Seq_Streams));
+        ZSTDGPU_ASSERT_MSG(copyLiteralGroupCount == CNTRS(CopyLiteralGroups), "%u != %u", copyLiteralGroupCount, CNTRS(CopyLiteralGroups));
+#endif
     }
     // CPU-side replacement for cross-block "final" offset propagation
     {

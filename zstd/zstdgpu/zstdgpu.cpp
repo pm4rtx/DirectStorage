@@ -727,9 +727,9 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_KERNEL_SCOPE_X(UpdateDispatchArgs_AfterDecompressSeq, L"UpdateDispatchArgs:: After Decompress Sequences")  \
     ZSTDGPU_KERNEL_SCOPE_X(ExecuteMatches                       , L"Execute Matches"            )   \
     ZSTDGPU_KERNEL_SCOPE_X(ExecuteSequences                     , L"ExecuteSequences"           )   \
-    ZSTDGPU_KERNEL_SCOPE_X(CopyBlockBytes                       , L"Copy Block Bytes"           )   \
+    ZSTDGPU_KERNEL_SCOPE_X(CopyBlockAndLiteralBytes             , L"Copy Block/Literal Bytes"   )   \
     ZSTDGPU_KERNEL_SCOPE_X(PrefixBlockSizes                     , L"Prefix Block Sizes"         )   \
-    ZSTDGPU_KERNEL_SCOPE_X(PrefixBlockCopyGroupCounts           , L"Prefix Block Copy Groups Counts")
+    ZSTDGPU_KERNEL_SCOPE_X(PrefixBlockAndLiteralCopyGroupCounts , L"Prefix Block/Literal Copy Groups Counts")
 
 #define ZSTDGPU_KERNEL_SCOPE_LIST()     \
     ZSTDGPU_KERNEL_SCOPE_LIST_STAGE_0() \
@@ -2268,6 +2268,7 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
             kzstdgpu_Srt_Pass_Memset_BlockSeqCountPrefixLookback,
             kzstdgpu_Srt_Pass_Memset_LitStreamCountPrefixLookback,
             kzstdgpu_Srt_Pass_Memset_HufLitCompactionLookback,
+            kzstdgpu_Srt_Pass_Memset_SeqStreamToLitCopyGroupPrefixLookback,
             kzstdgpu_Srt_Pass_Memset_FseIndexLookbackLLen,
             kzstdgpu_Srt_Pass_Memset_FseIndexLookbackOffs,
             kzstdgpu_Srt_Pass_Memset_FseIndexLookbackMLen,
@@ -2302,6 +2303,10 @@ void zstdgpu_SubmitStage1(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         zstdgpu_DispatchIndirect(cmdList, Memset, Memset_CmpBlockLookback);
         zstdgpu_Bind_Memset_HufLitCompactionLookback(cmdList, tracker, req->srts, req->resData.gpuOnly, /* memset value */0);
         zstdgpu_DispatchIndirect(cmdList, Memset, Memset_CmpBlockLookback);
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+        zstdgpu_Bind_Memset_SeqStreamToLitCopyGroupPrefixLookback(cmdList, tracker, req->srts, req->resData.gpuOnly, /* memset value */0);
+        zstdgpu_DispatchIndirect(cmdList, Memset, Memset_CmpBlockLookback);
+#endif
 
         // Group 2: FseIndexLookback{HufW,LLen,Offs,MLen} -- same shape as CmpBlockLookback (lookbackBlockCount uint32 each)
         zstdgpu_Bind_Memset_FseIndexLookbackLLen(cmdList, tracker, req->srts, req->resData.gpuOnly, /* memset value */0);
@@ -2626,6 +2631,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
     zstdgpu_BarrierTracker_FutureAccess(tracker, &req->resData.gpuOnly,
         kzstdgpu_Srt_Pass_PrefixSum_BlockSizesAll,
         kzstdgpu_Srt_Pass_PrefixSum_BlockCopyGroups,
+        kzstdgpu_Srt_Pass_PrefixSum_SeqStreamLitCopyGroups,
         kzstdgpu_Srt_Pass_PrefixSequenceOffsets
     );
     {
@@ -2640,13 +2646,22 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXEndEvent(cmdList);
     }
     {
-        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Prefix Block Copy Group Counts]");
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Prefix Block/Literal Copy Group Counts]");
 
         // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
-        ZSTDGPU_KERNEL_SCOPE(PrefixBlockCopyGroupCounts, cmdList,
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+        ZSTDGPU_KERNEL_SCOPE(PrefixBlockAndLiteralCopyGroupCounts, cmdList,
+            zstdgpu_Bind_PrefixSum_BlockCopyGroups(cmdList, tracker, req->srts, req->resData.gpuOnly, /* outputInclusive */0);
+            zstdgpu_DispatchIndirect(cmdList, PrefixSum, Prefix_AllBlockCount);
+            zstdgpu_Bind_PrefixSum_SeqStreamLitCopyGroups(cmdList, tracker, req->srts, req->resData.gpuOnly, /* outputInclusive */0);
+            zstdgpu_DispatchIndirect(cmdList, PrefixSum, Prefix_SeqBlockCount);
+        );
+#else
+        ZSTDGPU_KERNEL_SCOPE(PrefixBlockAndLiteralCopyGroupCounts, cmdList,
             zstdgpu_Bind_PrefixSum_BlockCopyGroups(cmdList, tracker, req->srts, req->resData.gpuOnly, /* outputInclusive */0);
             zstdgpu_DispatchIndirect(cmdList, PrefixSum, Prefix_AllBlockCount);
         );
+#endif
 
         PIXEndEvent(cmdList);
     }
@@ -2713,7 +2728,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
 
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Copy Block Bytes]");
-        ZSTDGPU_KERNEL_SCOPE(CopyBlockBytes, cmdList,
+        ZSTDGPU_KERNEL_SCOPE(CopyBlockAndLiteralBytes, cmdList,
         {
             // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
             zstdgpu_Bind_CopyBlockBytes(cmdList, tracker, req->srts, req->resData.gpuOnly);
@@ -2780,14 +2795,20 @@ ZSTDGPU_API void zstdgpu_ReadbackGpuResults(zstdgpu_PerRequestContext req, ID3D1
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, HufWIdToHufLitId, ShaderCopyRead);
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, HufLitIdToLitStreamId, ShaderCopyRead);
 
-#if !ZSTDGPU_USE_SEQUENCE_DEST_OFFS
+#if !ZSTDGPU_USE_SEQUENCE_DEST_OFFS && !ZSTDGPU_USE_PARALLEL_LITERALS
         zstdgpu_BarrierTracker_Flush(cmdList, tracker, &req->resData.gpuOnly);
 #endif
     }
 
 #if ZSTDGPU_USE_SEQUENCE_DEST_OFFS
-    zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, BlockDestOffs, ShaderCopyRead);
     zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, DecompressedSequenceDstOfs, ShaderCopyRead);
+#endif
+
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+    zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, SeqStreamToLitCopyGroupPrefix, ShaderCopyRead);
+#endif
+
+#if ZSTDGPU_USE_SEQUENCE_DEST_OFFS || ZSTDGPU_USE_PARALLEL_LITERALS
     zstdgpu_BarrierTracker_Flush(cmdList, tracker, &req->resData.gpuOnly);
 #endif
 

@@ -87,6 +87,7 @@
     ZSTDGPU_BUFFER(uint32_t                                 , SeqStreamToOffsFseId          )   \
     ZSTDGPU_BUFFER(uint32_t                                 , SeqStreamToMLenFseId          )   \
     ZSTDGPU_BUFFER(uint32_t                                 , SeqStreamToBlockId            )   \
+    ZSTDGPU_BUFFER(uint32_t                                 , SeqStreamToLitCopyGroupPrefix )   \
     ZSTDGPU_BUFFER(uint32_t                                 , BlockSeqCountPrefixLookback   )   \
     ZSTDGPU_BUFFER(uint32_t                                 , SeqCountPrefixLookback        )   \
     ZSTDGPU_BUFFER(uint32_t                                 , LitStreamCountPrefixLookback  )   \
@@ -108,6 +109,7 @@
     ZSTDGPU_BUFFER(uint32_t                                 , HuffmanTableInfo              )   \
     ZSTDGPU_BUFFER(uint32_t                                 , BlockSizePrefixLookback       )   \
     ZSTDGPU_BUFFER(uint32_t                                 , BlockToCopyGroupPrefixLookback)   \
+    ZSTDGPU_BUFFER(uint32_t                                 , SeqStreamToLitCopyGroupPrefixLookback)\
     ZSTDGPU_BUFFER(uint32_t                                 , LitGroupEndPerHuffmanTableLookback) \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset1Lookback)  \
     ZSTDGPU_BUFFER(uint32_t                                 , PerSeqStreamFinalOffset2Lookback)  \
@@ -330,6 +332,13 @@ static void zstdgpu_ResourceInfo_Stage_1_InitSize(zstdgpu_ResourceInfo *outInfo,
     const uint32_t SeqStreamToOffsFseId_Count = cmpBlockCount;
     const uint32_t SeqStreamToMLenFseId_Count = cmpBlockCount;
     const uint32_t SeqStreamToBlockId_Count   = cmpBlockCount;
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+    const uint32_t SeqStreamToLitCopyGroupPrefix_Count = cmpBlockCount;
+    const uint32_t SeqStreamToLitCopyGroupPrefixLookback_Count = zstdgpu_GetLookbackBlockCount(cmpBlockCount);
+#else
+    const uint32_t SeqStreamToLitCopyGroupPrefix_Count = 1;
+    const uint32_t SeqStreamToLitCopyGroupPrefixLookback_Count = 1;
+#endif
     const uint32_t CompressedBlocks_Count = cmpBlockCount;
     const uint32_t FseIndexLookbackLLen_Count = zstdgpu_GetLookbackBlockCount(cmpBlockCount);;
     const uint32_t FseIndexLookbackOffs_Count = FseIndexLookbackLLen_Count;
