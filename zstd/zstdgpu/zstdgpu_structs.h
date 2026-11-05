@@ -26,10 +26,9 @@
      *      - `DecompressedSequenceMLen[i]` stores includes prefix sum of sequence sizes (sequence size is a sum of literal and match length)
      *  the prefixes are restarted at stream/block boundaries
      *
-     *  By default this switch is OFF (mostly because it makes sequence execution more expensive)
-     *  but it enables useful experimentation paths
+     *  By default this switch is ON because it's required by the parallel literal copy (`ZSTDGPU_USE_PARALLEL_LITERALS`)
      */
-#   define ZSTDGPU_USE_PREFIXED_LLEN_MLEN 0
+#   define ZSTDGPU_USE_PREFIXED_LLEN_MLEN 1
 #endif
 
 #ifndef ZSTDGPU_USE_SEQUENCE_DEST_OFFS

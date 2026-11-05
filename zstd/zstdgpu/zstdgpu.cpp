@@ -2769,7 +2769,17 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         );
         PIXEndEvent(cmdList);
     }
-#endif
+
+    {
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Execute Matches]");
+        zstdgpu_Bind_ExecuteMatches(cmdList, tracker, req->srts, req->resData.gpuOnly);
+
+        ZSTDGPU_KERNEL_SCOPE(ExecuteMatches, cmdList,
+            cmdList->Dispatch(req->zstdFrameCount, 1, 1);
+        );
+        PIXEndEvent(cmdList);
+    }
+#else
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Execute Sequences]");
         zstdgpu_Bind_ExecuteSequences(cmdList, tracker, req->srts, req->resData.gpuOnly);
@@ -2779,6 +2789,7 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         );
         PIXEndEvent(cmdList);
     }
+#endif
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"Barrier with Resources for [Readback Counters :: After Block Decompression]");
         zstdgpu_BarrierTracker_Flush(cmdList, tracker, &req->resData.gpuOnly);

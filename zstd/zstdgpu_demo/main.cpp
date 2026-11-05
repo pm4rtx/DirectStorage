@@ -194,8 +194,10 @@ static const int16_t kzstdgpuFseProbsDefault[] =
 #if ZSTDGPU_USE_PARALLEL_LITERALS
 #include ".generated/ZstdGpuSrt_InitCopyLiteralGroups.h"
 #include ".generated/ZstdGpuSrt_CopyLiteralBytes.h"
-#endif
+#include ".generated/ZstdGpuSrt_ExecuteMatches.h"
+#else
 #include ".generated/ZstdGpuSrt_ExecuteSequences.h"
+#endif
 
 #define VALIDATE(name, data) ZSTDGPU_ASSERT(ZSTDGPU_ENUM_CONST(Validate_Success) == zstdgpu_ReferenceStore_Validate_##name(data))
 
@@ -1014,7 +1016,15 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
             zstdgpu_ShaderEntry_CopyLiteralBytes(srt, i, /* threadId */0);
         }
     }
-#endif
+    {
+        zstdgpu_ExecuteMatches_SRT srt;
+        zstdgpu_Srt_Fill(srt, zstdCpu);
+        for (uint32_t i = 0; i < zstdFrameCount; ++i)
+        {
+            zstdgpu_ShaderEntry_ExecuteMatches(srt);
+        }
+    }
+#else
     {
         zstdgpu_ExecuteSequences_SRT srt;
         zstdgpu_Srt_Fill(srt, zstdCpu);
@@ -1023,6 +1033,7 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
             zstdgpu_ShaderEntry_ExecuteSequences(srt);
         }
     }
+#endif
     ZSTDGPU_ASSERT(CNTRS(Frames_ExecuteSequences) == zstdFrameCount);
 
     // NOTE: counts are the ones this CPU pipeline already validated against the reference store, not re-read from its output
