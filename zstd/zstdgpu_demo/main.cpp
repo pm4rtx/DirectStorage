@@ -193,6 +193,7 @@ static const int16_t kzstdgpuFseProbsDefault[] =
 #include ".generated/ZstdGpuSrt_CopyBlockBytes.h"
 #if ZSTDGPU_USE_PARALLEL_LITERALS
 #include ".generated/ZstdGpuSrt_InitCopyLiteralGroups.h"
+#include ".generated/ZstdGpuSrt_CopyLiteralBytes.h"
 #endif
 #include ".generated/ZstdGpuSrt_ExecuteSequences.h"
 
@@ -1002,6 +1003,15 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
         for (uint32_t i = 0; i < CNTRS(CopyLiteralGroups); ++i)
         {
             zstdgpu_ShaderEntry_InitCopyLiteralGroups(srt, i);
+        }
+    }
+    {
+        zstdgpu_CopyLiteralBytes_SRT srt;
+        zstdgpu_Srt_Fill(srt, zstdCpu, /* tgOffset */0, /* workItemCount */CNTRS(CopyLiteralGroups));
+        // NOTE: one call per group because on CPU `ZSTDGPU_FOR_WORK_ITEMS` visits every item of the group whatever `threadId` is
+        for (uint32_t i = 0; i < CNTRS(CopyLiteralGroups); ++i)
+        {
+            zstdgpu_ShaderEntry_CopyLiteralBytes(srt, i, /* threadId */0);
         }
     }
 #endif

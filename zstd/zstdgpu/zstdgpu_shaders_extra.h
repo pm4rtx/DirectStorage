@@ -45,6 +45,123 @@ static void zstdgpu_ShaderEntry_InitCopyLiteralGroups(ZSTDGPU_PARAM_INOUT(zstdgp
     srt.inoutCopyLiteralGroups[groupId] = group;
 }
 
+static void zstdgpu_ShaderEntry_CopyLiteralBytes(ZSTDGPU_PARAM_INOUT(zstdgpu_CopyLiteralBytes_SRT) srt, uint32_t groupIdx, uint32_t threadId)
+{
+    ZSTDGPU_UNUSED(threadId); // NOTE: the CPU version of `ZSTDGPU_FOR_WORK_ITEMS` doesn't use it
+
+    const zstdgpu_CopyLiteralGroup group = srt.inCopyLiteralGroups[groupIdx];
+    const uint32_t seqStreamId = group.seqStreamId;
+
+    const zstdgpu_OffsetAndSize headRef = srt.inSeqStreamToRef2[seqStreamId];
+    const uint32_t blkGroupId = groupIdx - srt.inSeqStreamToLitCopyGroupPrefix[seqStreamId];
+
+    const uint32_t seqStart = srt.inPerSeqStreamSeqStart[seqStreamId] + (group.seqBaseCount & 0xffffu);
+    const uint32_t seqCount = group.seqBaseCount >> 16u;
+
+    #include "zstdgpu_lds_decl_base.h"
+    ZSTDGPU_COPY_LITERAL_BYTES_LDS(0, CopyLiteralBytes);
+    #include "zstdgpu_lds_decl_undef.h"
+
+    // TODO(pavel): experiment with compacting LLen/DstOfs so that LLen == 0 are removed.
+    // NOTE: a group spanning more sequences than the cache holds (e.g. many zero literal lengths) searches device memory
+    const bool useLdsCache = seqCount <= kzstdgpu_CopyLiteralBytes_BytesPerTGroup;
+    ZSTDGPU_BRANCH if (useLdsCache)
+    {
+        ZSTDGPU_FOR_WORK_ITEMS(seqId, seqCount, threadId, kzstdgpu_TgSizeX_CopyLiteralBytes)
+        {
+            zstdgpu_LdsStoreU32(GS_LLenCache + seqId, srt.inDecompressedSequenceLLen[seqStart + seqId]);
+            zstdgpu_LdsStoreU32(GS_DestCache + seqId, srt.inDecompressedSequenceDstOfs[seqStart + seqId]);
+        }
+        GroupMemoryBarrierWithGroupSync();
+    }
+
+    // Literal type, head size and source come from the stream's head reference (offset of the whole literal; RLE: the symbol)
+    const uint32_t litType    = zstdgpu_DecodeLitType(headRef.size);
+    const uint32_t litByteCnt = zstdgpu_DecodeLitSize(headRef.size);
+    const uint32_t blkByteOfs = blkGroupId * kzstdgpu_CopyLiteralBytes_BytesPerTGroup;
+    ZSTDGPU_ASSERT(blkByteOfs < litByteCnt);
+    const uint32_t grpByteCnt = zstdgpu_MinU32(litByteCnt - blkByteOfs, kzstdgpu_CopyLiteralBytes_BytesPerTGroup);
+    const uint32_t litByteOfs = headRef.offs + (zstdgpu_IsLitTypeRle(litType) ? 0u : blkByteOfs);
+
+    #define FindByteDstAndStore_Lds(srcByte, srcByteIdx)\
+        const uint32_t blkByteIdx = (srcByteIdx);       \
+        /*  Search within the LDS-cached LLen prefixes [0, seqCount) the start of the sequence owning `srcByte`         \
+         *  Found index used to lookup in DestCache the start of the sequence byte range */                             \
+        const uint32_t localSeqIdx  = zstdgpu_BinarySearchLds(GS_LLenCache, 0, seqCount, blkByteIdx, 0xFFFFFFFFu);      \
+        const uint32_t seqLLenPrfx  = zstdgpu_LdsLoadU32(GS_LLenCache + localSeqIdx);                                   \
+        const uint32_t seqDstBase   = zstdgpu_LdsLoadU32(GS_DestCache + localSeqIdx);                                   \
+        zstdgpu_TypedStoreU8(srt.inoutUnCompressedFramesData, seqDstBase + (blkByteIdx - seqLLenPrfx), srcByte);
+
+    #define FindByteDstAndStore_Mem(srcByte, srcByteIdx)\
+        const uint32_t blkByteIdx = (srcByteIdx);       \
+        /*  Search within sequences LLen prefix [seqStart, seqStart + seqCount) the start of the sequence owning `srcByte`  \
+         *  Found index used to lookup in sequence destination the start of the sequence byte range */                      \
+        const uint32_t seqIdx       = zstdgpu_BinarySearch(srt.inDecompressedSequenceLLen, seqStart, seqCount, blkByteIdx); \
+        const uint32_t seqLLenPrfx  = srt.inDecompressedSequenceLLen[seqIdx];                                               \
+        const uint32_t seqDstBase   = srt.inDecompressedSequenceDstOfs[seqIdx];                                             \
+        zstdgpu_TypedStoreU8(srt.inoutUnCompressedFramesData, seqDstBase + (blkByteIdx - seqLLenPrfx), srcByte);
+
+    ZSTDGPU_BRANCH if (zstdgpu_IsLitTypeCmp(litType))
+    {
+        ZSTDGPU_BRANCH if (useLdsCache)
+        {
+            ZSTDGPU_FOR_WORK_ITEMS(grpByteIdx, grpByteCnt, threadId, kzstdgpu_TgSizeX_CopyLiteralBytes)
+            {
+                const uint32_t srcByte = srt.inDecompressedLiterals[litByteOfs + grpByteIdx];
+                FindByteDstAndStore_Lds(srcByte, blkByteOfs + grpByteIdx)
+            }
+        }
+        else
+        {
+            ZSTDGPU_FOR_WORK_ITEMS(grpByteIdx, grpByteCnt, threadId, kzstdgpu_TgSizeX_CopyLiteralBytes)
+            {
+                const uint32_t srcByte = srt.inDecompressedLiterals[litByteOfs + grpByteIdx];
+                FindByteDstAndStore_Mem(srcByte, blkByteOfs + grpByteIdx)
+            }
+        }
+    }
+    else ZSTDGPU_BRANCH if (zstdgpu_IsLitTypeRaw(litType))
+    {
+        ZSTDGPU_BRANCH if (useLdsCache)
+        {
+            ZSTDGPU_FOR_WORK_ITEMS(grpByteIdx, grpByteCnt, threadId, kzstdgpu_TgSizeX_CopyLiteralBytes)
+            {
+                const uint32_t srcByte = srt.inCompressedData[litByteOfs + grpByteIdx];
+                FindByteDstAndStore_Lds(srcByte, blkByteOfs + grpByteIdx)
+            }
+        }
+        else
+        {
+            ZSTDGPU_FOR_WORK_ITEMS(grpByteIdx, grpByteCnt, threadId, kzstdgpu_TgSizeX_CopyLiteralBytes)
+            {
+                const uint32_t srcByte = srt.inCompressedData[litByteOfs + grpByteIdx];
+                FindByteDstAndStore_Mem(srcByte, blkByteOfs + grpByteIdx)
+            }
+        }
+    }
+    else
+    {
+        ZSTDGPU_BRANCH if (useLdsCache)
+        {
+            ZSTDGPU_FOR_WORK_ITEMS(grpByteIdx, grpByteCnt, threadId, kzstdgpu_TgSizeX_CopyLiteralBytes)
+            {
+                const uint32_t srcByte = litByteOfs; // RLE: litByteOfs holds the literal byte value itself
+                FindByteDstAndStore_Lds(srcByte, blkByteOfs + grpByteIdx)
+            }
+        }
+        else
+        {
+            ZSTDGPU_FOR_WORK_ITEMS(grpByteIdx, grpByteCnt, threadId, kzstdgpu_TgSizeX_CopyLiteralBytes)
+            {
+                const uint32_t srcByte = litByteOfs; // RLE: litByteOfs holds the literal byte value itself
+                FindByteDstAndStore_Mem(srcByte, blkByteOfs + grpByteIdx)
+            }
+        }
+    }
+    #undef FindByteDstAndStore_Mem
+    #undef FindByteDstAndStore_Lds
+}
+
 static void zstdgpu_ShaderEntry_ExecuteMatches(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteMatches_SRT) srt)
 {
     const uint32_t frameCnt = srt.inoutCounters[0].Frames;

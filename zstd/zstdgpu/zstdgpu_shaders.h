@@ -3930,6 +3930,16 @@ static void zstdgpu_ShaderEntry_FinaliseSequenceOffsets(ZSTDGPU_PARAM_INOUT(zstd
     srt.inoutDecompressedSequenceOffs[seqIdx] = offset;
 }
 
+#define ZSTDGPU_COPY_LITERAL_BYTES_LDS(base, size)                                  \
+    ZSTDGPU_LDS_SIZE(size)                                                          \
+    ZSTDGPU_LDS_BASE(base)                                                          \
+    ZSTDGPU_LDS_REGION(LLenCache, kzstdgpu_CopyLiteralBytes_BytesPerTGroup)         \
+    ZSTDGPU_LDS_REGION(DestCache, kzstdgpu_CopyLiteralBytes_BytesPerTGroup)
+
+#include "zstdgpu_lds_decl_size.h"
+ZSTDGPU_COPY_LITERAL_BYTES_LDS(0, CopyLiteralBytes);
+#include "zstdgpu_lds_decl_undef.h"
+
 static void zstdgpu_ShaderEntry_CopyBlockBytes(ZSTDGPU_PARAM_INOUT(zstdgpu_CopyBlockBytes_SRT) srt, uint32_t groupId, uint32_t threadId)
 {
     ZSTDGPU_UNUSED(threadId);

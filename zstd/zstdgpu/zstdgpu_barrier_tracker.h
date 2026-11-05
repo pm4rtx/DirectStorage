@@ -256,7 +256,8 @@ static const zstdgpu_BarrierTrackerFusion kzstdgpu_BarrierTracker_Fusion[] =
     { kzstdgpu_Srt_Pass_DecompressHuffmanWeights, 0, kzstdgpu_Srt_Pass_DecodeHuffmanWeights,  0, kzstdgpu_BarrierTracker_ResId_DecompressedHuffmanWeightCount },
     { kzstdgpu_Srt_Pass_InitHuffmanTable,         0, kzstdgpu_Srt_Pass_InitHuffmanTable,      1, kzstdgpu_BarrierTracker_ResId_HuffmanTableInfo               },
     { kzstdgpu_Srt_Pass_InitHuffmanTable,         0, kzstdgpu_Srt_Pass_InitHuffmanTable,      1, kzstdgpu_BarrierTracker_ResId_HuffmanTableCodeAndSymbol      },
-    { kzstdgpu_Srt_Pass_InitHuffmanTable,         0, kzstdgpu_Srt_Pass_InitHuffmanTable,      1, kzstdgpu_BarrierTracker_ResId_HuffmanTableRankIndex          }
+    { kzstdgpu_Srt_Pass_InitHuffmanTable,         0, kzstdgpu_Srt_Pass_InitHuffmanTable,      1, kzstdgpu_BarrierTracker_ResId_HuffmanTableRankIndex          },
+    { kzstdgpu_Srt_Pass_CopyBlockBytes,           0, kzstdgpu_Srt_Pass_CopyLiteralBytes,      0, kzstdgpu_BarrierTracker_ResId_UnCompressedFramesData         }
 };
 
 

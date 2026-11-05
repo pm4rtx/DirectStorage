@@ -62,6 +62,7 @@ ZSTDGPU_WARN_POP_MSVC()
 
 #include "ZstdGpuComputeDestBlockOffsets.h"
 #include "ZstdGpuComputePrefixSum.h"
+#include "ZstdGpuCopyLiteralBytes.h"
 #include "ZstdGpuDecodeHuffmanWeights.h"
 #include "ZstdGpuDecompressHuffmanWeights.h"
 #include "ZstdGpuDecompressLiterals.h"
@@ -581,6 +582,7 @@ static uint32_t zstdgpu_Count_SRTs_Stage(uint32_t stageIndex)
 #define ZSTDGPU_KERNEL_LIST()                                                                                                           \
     ZSTDGPU_KERNEL(ComputeDestBlockOffsets                          ,   L"Compute Destination Block Offsets")                                   \
     ZSTDGPU_KERNEL(ComputePrefixSum                                 ,   L"Compute Prefix of Literal and TG Count for Literal Decompression")    \
+    ZSTDGPU_KERNEL(CopyLiteralBytes                                 ,   L"Copy Literal Bytes")                                                  \
     ZSTDGPU_KERNEL(DecodeHuffmanWeights                             ,   L"Decode (from nibbles) Uncompressed Huffman Weights")                  \
     ZSTDGPU_KERNEL(DecompressHuffmanWeights                         ,   L"Decompress FSE-compressed Huffman Weights")                           \
     ZSTDGPU_KERNEL(DecompressLiterals                               ,   L"Decompress Literals")                                                 \
@@ -649,6 +651,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
 
 #define ZSTDGPU_DISPATCH32_CMD_SIG_LIST()                       \
     ZSTDGPU_DISPATCH32_CMD_SIG(ComputeDestBlockOffsets)           \
+    ZSTDGPU_DISPATCH32_CMD_SIG(CopyLiteralBytes)                  \
     ZSTDGPU_DISPATCH32_CMD_SIG(DecodeHuffmanWeights)              \
     ZSTDGPU_DISPATCH32_CMD_SIG(DecompressHuffmanWeights)          \
     ZSTDGPU_DISPATCH32_CMD_SIG(DecompressLiterals)                \
@@ -676,6 +679,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
 #define ZSTDGPU_RUNTIME_KERNEL_LIST_SHARED()        \
     ZSTDGPU_KERNEL(ComputeDestBlockOffsets)         \
     ZSTDGPU_KERNEL(ComputePrefixSum)                \
+    ZSTDGPU_KERNEL(CopyLiteralBytes)                \
     ZSTDGPU_KERNEL(DecodeHuffmanWeights)            \
     ZSTDGPU_KERNEL(DecompressHuffmanWeights)        \
     ZSTDGPU_KERNEL(FinaliseSequenceOffsets)         \
@@ -730,6 +734,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_KERNEL_SCOPE_X(ComputeDestBlockOffsets              , L"Compute Dest Block Offsets" )   \
     ZSTDGPU_KERNEL_SCOPE_X(UpdateDispatchArgs_AfterDecompressSeq, L"UpdateDispatchArgs:: After Decompress Sequences")  \
     ZSTDGPU_KERNEL_SCOPE_X(InitCopyLiteralGroups                , L"Init Copy Literal Groups"   )   \
+    ZSTDGPU_KERNEL_SCOPE_X(CopyLiteralBytes                     , L"Copy Literal Bytes"         )   \
     ZSTDGPU_KERNEL_SCOPE_X(ExecuteMatches                       , L"Execute Matches"            )   \
     ZSTDGPU_KERNEL_SCOPE_X(ExecuteSequences                     , L"ExecuteSequences"           )   \
     ZSTDGPU_KERNEL_SCOPE_X(CopyBlockAndLiteralBytes             , L"Copy Block/Literal Bytes"   )   \
@@ -2750,6 +2755,17 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
 
         ZSTDGPU_KERNEL_SCOPE(InitCopyLiteralGroups, cmdList,
             zstdgpu_DispatchIndirect(cmdList, InitCopyLiteralGroups, InitCopyLiteralGroups);
+        );
+        PIXEndEvent(cmdList);
+    }
+
+    {
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Copy Literal Bytes]");
+        zstdgpu_Bind_CopyLiteralBytes(cmdList, tracker, req->srts, req->resData.gpuOnly);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
+
+        ZSTDGPU_KERNEL_SCOPE(CopyLiteralBytes, cmdList,
+            zstdgpu_DispatchIndirect(cmdList, CopyLiteralBytes, CopyLiteralBytes);
         );
         PIXEndEvent(cmdList);
     }
