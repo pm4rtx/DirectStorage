@@ -83,6 +83,7 @@
     ZSTDGPU_BUFFER(uint32_t                                 , HufWIdToHufLitId              )   \
     ZSTDGPU_BUFFER(uint32_t                                 , HufLitIdToLitStreamId         )   \
     ZSTDGPU_BUFFER(zstdgpu_OffsetAndSize                    , SeqStreamToRef                )   \
+    ZSTDGPU_BUFFER(zstdgpu_OffsetAndSize                    , SeqStreamToRef2               )   \
     ZSTDGPU_BUFFER(uint32_t                                 , SeqStreamToLLenFseId          )   \
     ZSTDGPU_BUFFER(uint32_t                                 , SeqStreamToOffsFseId          )   \
     ZSTDGPU_BUFFER(uint32_t                                 , SeqStreamToMLenFseId          )   \
@@ -328,6 +329,7 @@ static void zstdgpu_ResourceInfo_Stage_1_InitSize(zstdgpu_ResourceInfo *outInfo,
     const uint32_t HufWIdToHufLitId_Count = cmpBlockCount;
     const uint32_t HufLitIdToLitStreamId_Count = cmpBlockCount;
     const uint32_t SeqStreamToRef_Count       = cmpBlockCount;
+    const uint32_t SeqStreamToRef2_Count      = cmpBlockCount;
     const uint32_t SeqStreamToLLenFseId_Count = cmpBlockCount;
     const uint32_t SeqStreamToOffsFseId_Count = cmpBlockCount;
     const uint32_t SeqStreamToMLenFseId_Count = cmpBlockCount;

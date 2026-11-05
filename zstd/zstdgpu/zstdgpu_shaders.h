@@ -3229,27 +3229,32 @@ static void zstdgpu_UpdateBlockWithSequences(ZSTDGPU_PARAM_INOUT(zstdgpu_Decompr
 {
     // NOTE(pavel): the final block size will be computed as SUM(literalSize, totalMLen)
     const uint32_t literalSize = srt.inoutBlockSizePrefix[blockId];
-    zstdgpu_OffsetAndSize blockRef = srt.inoutBlocksUncRefs[blockId];
+    zstdgpu_OffsetAndSize blockRef1 = srt.inoutBlocksUncRefs[blockId];
 
-    const uint32_t litType = zstdgpu_DecodeLitType(blockRef.size);
-    ZSTDGPU_ASSERT(literalSize <= zstdgpu_DecodeLitSize(blockRef.size));
+    const uint32_t litType = zstdgpu_DecodeLitType(blockRef1.size);
+    ZSTDGPU_ASSERT(literalSize <= zstdgpu_DecodeLitSize(blockRef1.size));
 
     // NOTE(pavel): `totalLLen` exceeds `literalSize` only for corrupt input
     ZSTDGPU_ASSERT(totalLLen <= literalSize);
     const uint32_t litHeadSize = zstdgpu_MinU32(totalLLen, literalSize);
     const uint32_t litTailSize = literalSize - litHeadSize;
 
+    zstdgpu_OffsetAndSize blockRef2;
+    blockRef2.offs = blockRef1.offs;
+    blockRef2.size = litType | litHeadSize;
+
     // NOTE: RLE literals contain actual symbol instead of offset
     ZSTDGPU_BRANCH if (0 == zstdgpu_IsLitTypeRle(litType))
     {
-        blockRef.offs += litHeadSize;
+        blockRef1.offs += litHeadSize;
     }
-    blockRef.size = litType | litTailSize;
+    blockRef1.size = litType | litTailSize;
     tailCpyGrpCnt = ZSTDGPU_TG_COUNT(litTailSize, kzstdgpu_CopyBlockBytes_BytesPerTGroup);
 
     // NOTE(pavel): update block size adding `totalMLen` bytes on top
     srt.inoutBlockSizePrefix[blockId] = totalMLen + literalSize;
-    srt.inoutBlocksUncRefs[blockId] = blockRef;
+    srt.inoutBlocksUncRefs[blockId] = blockRef1;
+    srt.inoutSeqStreamToRef2[seqStreamId] = blockRef2;
     srt.inoutBlockToCopyGroupPrefix[blockId] = tailCpyGrpCnt;
 
 #if ZSTDGPU_USE_PARALLEL_LITERALS

@@ -113,6 +113,7 @@ ZSTDGPU_SRT_HEAP_BIND_GROUP_NAMED_BEGIN(SequenceOutputs)
     ZSTDGPU_SRT_BUF_RW_STRUCT(uint32_t                      , PerSeqStreamFinalOffset2      )
     ZSTDGPU_SRT_BUF_RW_STRUCT(uint32_t                      , PerSeqStreamFinalOffset3      )
     ZSTDGPU_SRT_BUF_RW_STRUCT(uint32_t                      , SeqStreamToLitCopyGroupPrefix )
+    ZSTDGPU_SRT_BUF_RW_STRUCT(zstdgpu_OffsetAndSize         , SeqStreamToRef2               )
 ZSTDGPU_SRT_HEAP_BIND_GROUP_END()
 
 ZSTDGPU_SRT_HEAP_BIND_GROUP_NAMED_BEGIN(LiteralBytes)

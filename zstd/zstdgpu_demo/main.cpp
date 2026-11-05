@@ -399,6 +399,7 @@ static void zstdgpu_Test_DecompressSequences(zstdgpu_ResourceDataCpu & cpuRes, z
             srt.inoutBlockToCopyGroupPrefix     = cpuRes.BlockToCopyGroupPrefix;
             srt.inoutBlocksUncRefs              = cpuRes.BlocksUncRefs;
             srt.inoutSeqStreamToLitCopyGroupPrefix = cpuRes.SeqStreamToLitCopyGroupPrefix;
+            srt.inoutSeqStreamToRef2            = cpuRes.SeqStreamToRef2;
 
             // NOTE: `Counters` are read and accumulated by `DecompressSequences`, so the simulation accumulates into a copy of GPU counters
             zstdgpu_Counters counters = *gpuReadbackRes.Counters;
