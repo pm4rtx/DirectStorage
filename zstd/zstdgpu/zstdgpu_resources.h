@@ -56,7 +56,8 @@
     ZSTDGPU_BUFFER(uint8_t                                  , UnCompressedFramesData        )   \
     ZSTDGPU_BUFFER(zstdgpu_OffsetAndSize                    , UnCompressedFramesRefs        )
 
-#define ZSTDGPU_BUFFERS_LIST_STAGE_2() /* empty so far*/
+#define ZSTDGPU_BUFFERS_LIST_STAGE_2()                                                          \
+    ZSTDGPU_BUFFER(zstdgpu_CopyLiteralGroup                 , CopyLiteralGroups             )
 
 #define ZSTDGPU_BUFFERS_LIST_UPLOAD_STAGE_1() /* empty so far*/
 
@@ -359,7 +360,7 @@ static void zstdgpu_ResourceInfo_Stage_1_InitSize(zstdgpu_ResourceInfo *outInfo,
     ZSTDGPU_ALL_BUFFERS_LIST_STAGE_1()
 }
 
-static void zstdgpu_ResourceInfo_Stage_2_InitSize(zstdgpu_ResourceInfo *outInfo, uint32_t literalCount, uint32_t sequencesCount, uint32_t uncompressedFramesByteCount, uint32_t uncompressedFrameCount)
+static void zstdgpu_ResourceInfo_Stage_2_InitSize(zstdgpu_ResourceInfo *outInfo, uint32_t literalCount, uint32_t sequencesCount, uint32_t uncompressedFramesByteCount, uint32_t uncompressedFrameCount, uint32_t cmpBlockCount)
 {
     const uint32_t DecompressedLiterals_Count       = zstdgpu_AlignUp(literalCount, sizeof(uint32_t)); // align to a dword because this buffer is aliased with a view that access dwords
 
@@ -374,6 +375,23 @@ static void zstdgpu_ResourceInfo_Stage_2_InitSize(zstdgpu_ResourceInfo *outInfo,
     const uint32_t DecompressedSequenceDstOfs_Count = DecompressedSequenceLLen_Count;
 #else
     const uint32_t DecompressedSequenceDstOfs_Count = 1;
+#endif
+
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+    // NOTE(pavel): to estimate the number of threadgroups:
+    //  a. we assume that all uncompressed data is formed by literals
+    //  b. we know that given `cmpBlockCount`, the amount of literal bytes can't exceed `cmpBlockCount * 128KB`
+    // so we compute the minimum of both
+    const uint32_t cmpLitByteCount = zstdgpu_MinU32(uncompressedFramesByteCount, cmpBlockCount << kzstdgpu_MaxCount_BlockSizeBits);
+
+    // NOTE(pavel): then we divide (and round up) the maximal possible size of literals by the number bytes copied per threadgroup and add extra 1 threadgroup per compressed
+    // block assuming the block is not aligned
+    const uint32_t CopyLiteralGroups_Count = zstdgpu_MaxU32((cmpLitByteCount + kzstdgpu_CopyLiteralBytes_BytesPerTGroup - 1) / kzstdgpu_CopyLiteralBytes_BytesPerTGroup + cmpBlockCount, 1);
+    ZSTDGPU_ASSERT(CopyLiteralGroups_Count >= cmpBlockCount);
+    ZSTDGPU_ASSERT(CopyLiteralGroups_Count <= 0xffffffffu / (uint32_t)sizeof(zstdgpu_CopyLiteralGroup));
+#else
+    const uint32_t CopyLiteralGroups_Count = 1;
+    ZSTDGPU_UNUSED(cmpBlockCount);
 #endif
 
     ZSTDGPU_ALL_BUFFERS_LIST_STAGE_2()
@@ -486,9 +504,9 @@ static void zstdgpu_ResourceInfo_Stage_1_Init(zstdgpu_ResourceInfo *outInfo, uin
 }
 
 
-static void zstdgpu_ResourceInfo_Stage_2_Init(zstdgpu_ResourceInfo *outInfo, uint32_t literalCount, uint32_t sequencesCount, uint32_t uncompressedFramesByteCount, uint32_t uncompressedFrameCount)
+static void zstdgpu_ResourceInfo_Stage_2_Init(zstdgpu_ResourceInfo *outInfo, uint32_t literalCount, uint32_t sequencesCount, uint32_t uncompressedFramesByteCount, uint32_t uncompressedFrameCount, uint32_t cmpBlockCount)
 {
-    zstdgpu_ResourceInfo_Stage_2_InitSize(outInfo, literalCount, sequencesCount, uncompressedFramesByteCount, uncompressedFrameCount);
+    zstdgpu_ResourceInfo_Stage_2_InitSize(outInfo, literalCount, sequencesCount, uncompressedFramesByteCount, uncompressedFrameCount, cmpBlockCount);
     outInfo->UnCompressedFramesData_ByteSizeInternal = 0;
     outInfo->UnCompressedFramesRefs_ByteSizeInternal = 0;
     zstdgpu_ResourceInfo_Stage_2_InitOffsetGpuOnly(outInfo);

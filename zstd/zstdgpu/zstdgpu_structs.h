@@ -360,7 +360,8 @@ static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockCount         = 17;
 static const uint32_t kzstdgpu_DispatchSlot_Memset_CmpBlockLookback      = 18;
 static const uint32_t kzstdgpu_DispatchSlot_Memset_AllBlockLookback      = 19;
 static const uint32_t kzstdgpu_DispatchSlot_PropagateFseIndex            = 20;
-static const uint32_t kzstdgpu_DispatchSlot_Count                        = 21;
+static const uint32_t kzstdgpu_DispatchSlot_InitCopyLiteralGroups        = 21;
+static const uint32_t kzstdgpu_DispatchSlot_Count                        = 22;
 
 #if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
 static const uint32_t kzstdgpu_DispatchSlot_CmdsPerSlot                  = 1;
@@ -489,6 +490,12 @@ static const uint32_t kzstdgpu_TgSizeX_CopyLiteralBytes = 128;
 
 static const uint32_t kzstdgpu_CopyLiteralBytes_BytesPerThread = 4;
 static const uint32_t kzstdgpu_CopyLiteralBytes_BytesPerTGroup = kzstdgpu_TgSizeX_CopyLiteralBytes * kzstdgpu_CopyLiteralBytes_BytesPerThread;
+
+#if defined(_GAMING_XBOX) || defined(__XBOX_SCARLETT) || defined(__XBOX_ONE)
+static const uint32_t kzstdgpu_TgSizeX_InitCopyLiteralGroups = 64;
+#else
+static const uint32_t kzstdgpu_TgSizeX_InitCopyLiteralGroups = 128;
+#endif
 
 #define ZSTDGPU_TG_COUNT(elemCount, tgSize) (((elemCount) + (tgSize) - 1) / (tgSize))
 
@@ -1567,6 +1574,13 @@ static uint32_t zstdgpu_ComputeFseDataStartFromFseIndexMLen(uint32_t fseIndex, u
     return (fseIndex < kzstdgpu_FseRleTableCount) ? fseIndex
                                                   : zstdgpu_ComputeFseDataStartMLen(fseIndex - zstdgpu_ComputeFseIndexMLen(0, cmpBlockCount), cmpBlockCount);
 }
+
+typedef struct zstdgpu_CopyLiteralGroup
+{
+    uint32_t seqStreamId;   //< sequence stream index (compressed block with sequences) the group belongs to
+    uint32_t seqBaseCount;  //< [ 0:15] sequence stream relative index of the sequence owning the group's first literal byte
+                            //< [16:31] number of sequences owning the group's bytes (it's packed into 16 bits because a block can hold at most `floor(2^17 / 3)` < 2^16 sequences)
+} zstdgpu_CopyLiteralGroup;
 
 typedef struct zstdgpu_CompressedBlockData
 {

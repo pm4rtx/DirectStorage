@@ -432,6 +432,20 @@ ZSTDGPU_SRT_BEGIN(ExecuteMatches, Stage2)
     ZSTDGPU_SRT_BUF_RO_STRUCT(zstdgpu_CompressedBlockData   , CompressedBlocks              )
 ZSTDGPU_SRT_END()
 
+ZSTDGPU_SRT_BEGIN(InitCopyLiteralGroups, Stage2)
+    ZSTDGPU_SRT_USE_BIND_GROUP(DispatchIndirect)
+    ZSTDGPU_SRT_BUF_RW_STRUCT(zstdgpu_CopyLiteralGroup      , CopyLiteralGroups             )
+
+    ZSTDGPU_SRT_BUF_RO_STRUCT(zstdgpu_Counters              , Counters                      )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , SeqStreamToLitCopyGroupPrefix )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(zstdgpu_OffsetAndSize         , SeqStreamToRef2               )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , PerSeqStreamSeqStart          )
+    ZSTDGPU_SRT_BUF_RO_STRUCT(uint32_t                      , DecompressedSequenceLLen      )
+
+    ZSTDGPU_SRT_CONST_INDIRECT(uint32_t                     , tgOffset                      )
+    ZSTDGPU_SRT_CONST_INDIRECT(uint32_t                     , workItemCount                 )
+ZSTDGPU_SRT_END()
+
 ZSTDGPU_SRT_BEGIN(CopyBlockBytes, Stage2)
     ZSTDGPU_SRT_USE_BIND_GROUP(DispatchIndirect)
     ZSTDGPU_SRT_USE_BIND_GROUP(FrameOutput)

@@ -16,6 +16,35 @@
 ZSTDGPU_WARN_PUSH_MSVC()
 ZSTDGPU_WARN_STOP_MSVC(4505) /**< warning C4505: 'function name': unreferenced function with internal linkage has been removed */
 
+static void zstdgpu_ShaderEntry_InitCopyLiteralGroups(ZSTDGPU_PARAM_INOUT(zstdgpu_InitCopyLiteralGroups_SRT) srt, uint32_t groupId)
+{
+    ZSTDGPU_ASSERT(groupId < srt.workItemCount);
+
+    const uint32_t seqStreamId   = zstdgpu_BinarySearch(srt.inSeqStreamToLitCopyGroupPrefix, 0, srt.inCounters[0].Seq_Streams, groupId);
+    const uint32_t blkGroupId = groupId - srt.inSeqStreamToLitCopyGroupPrefix[seqStreamId];
+    const uint32_t grpByteOfs = blkGroupId * kzstdgpu_CopyLiteralBytes_BytesPerTGroup;
+
+    const uint32_t litByteCnt = zstdgpu_DecodeLitSize(srt.inSeqStreamToRef2[seqStreamId].size);
+    ZSTDGPU_ASSERT(grpByteOfs < litByteCnt);
+    const uint32_t grpByteCnt = zstdgpu_MinU32(litByteCnt - grpByteOfs, kzstdgpu_CopyLiteralBytes_BytesPerTGroup);
+
+    uint32_t globalSeqOfs = 0;
+    uint32_t globalSeqEnd = 0;
+    zstdgpu_GetSequenceBeginEnd(globalSeqOfs, globalSeqEnd, seqStreamId, srt.inPerSeqStreamSeqStart, srt.inCounters);
+    uint32_t globalSeqCnt = globalSeqEnd - globalSeqOfs;
+
+    const uint32_t streamSeqBase = zstdgpu_BinarySearch(srt.inDecompressedSequenceLLen, globalSeqOfs, globalSeqCnt, grpByteOfs) - globalSeqOfs;
+    const uint32_t streamSeqLast = zstdgpu_BinarySearch(srt.inDecompressedSequenceLLen, globalSeqOfs, globalSeqCnt, grpByteOfs + grpByteCnt - 1u) - globalSeqOfs;
+    ZSTDGPU_ASSERT(streamSeqBase <= streamSeqLast);
+    const uint32_t streamSeqCnt = streamSeqLast - streamSeqBase + 1u;
+    ZSTDGPU_ASSERT(streamSeqBase <= 0xffffu && streamSeqCnt <= 0xffffu);
+
+    zstdgpu_CopyLiteralGroup group;
+    group.seqStreamId  = seqStreamId;
+    group.seqBaseCount = streamSeqBase | (streamSeqCnt << 16u);
+    srt.inoutCopyLiteralGroups[groupId] = group;
+}
+
 static void zstdgpu_ShaderEntry_ExecuteMatches(ZSTDGPU_PARAM_INOUT(zstdgpu_ExecuteMatches_SRT) srt)
 {
     const uint32_t frameCnt = srt.inoutCounters[0].Frames;

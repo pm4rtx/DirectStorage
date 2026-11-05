@@ -94,5 +94,6 @@ void main()
         // The number of Groups required for `CopyBlockBytes` is only calculated after `DecompressSequences`
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_CopyBlockBytes, srt.inoutCounters[0].CopyBlockGroups, 1);
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_CopyLiteralBytes, srt.inoutCounters[0].CopyLiteralGroups, 1);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_InitCopyLiteralGroups, srt.inoutCounters[0].CopyLiteralGroups, kzstdgpu_TgSizeX_InitCopyLiteralGroups);
     }
 }

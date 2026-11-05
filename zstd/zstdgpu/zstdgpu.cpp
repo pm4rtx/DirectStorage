@@ -91,6 +91,7 @@ ZSTDGPU_WARN_POP_MSVC()
 #include "ZstdGpuExecuteSequences64.h"
 #include "ZstdGpuExecuteSequences32.h"
 #include "ZstdGpuFinaliseSequenceOffsets.h"
+#include "ZstdGpuInitCopyLiteralGroups.h"
 #include "ZstdGpuInitFseTable.h"
 #include "ZstdGpuInitHuffmanTable.h"
 #include "ZstdGpuInitHuffmanTableAndDecompressLiterals.h"
@@ -609,6 +610,7 @@ static uint32_t zstdgpu_Count_SRTs_Stage(uint32_t stageIndex)
     ZSTDGPU_KERNEL(ExecuteSequences64                               ,   L"Execute Sequences 64")                                                \
     ZSTDGPU_KERNEL(ExecuteSequences32                               ,   L"Execute Sequences 32")                                                \
     ZSTDGPU_KERNEL(FinaliseSequenceOffsets                          ,   L"Finalise Sequence Offsets")                                           \
+    ZSTDGPU_KERNEL(InitCopyLiteralGroups                            ,   L"Init Copy Literal Groups")                                            \
     ZSTDGPU_KERNEL(InitFseTable                                     ,   L"Init Fse Table")                                                      \
     ZSTDGPU_KERNEL(InitHuffmanTable                                 ,   L"Init Huffman Table")                                                  \
     ZSTDGPU_KERNEL(InitHuffmanTableAndDecompressLiterals            ,   L"Init Huffman Table and Decompress Literals")                          \
@@ -652,6 +654,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_DISPATCH32_CMD_SIG(DecompressLiterals)                \
     ZSTDGPU_DISPATCH32_CMD_SIG(DecompressSequences)               \
     ZSTDGPU_DISPATCH32_CMD_SIG(FinaliseSequenceOffsets)           \
+    ZSTDGPU_DISPATCH32_CMD_SIG(InitCopyLiteralGroups)             \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitFseTable)                      \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitHuffmanTable)                  \
     ZSTDGPU_DISPATCH32_CMD_SIG(InitHuffmanTableAndDecompressLiterals) \
@@ -676,6 +679,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_KERNEL(DecodeHuffmanWeights)            \
     ZSTDGPU_KERNEL(DecompressHuffmanWeights)        \
     ZSTDGPU_KERNEL(FinaliseSequenceOffsets)         \
+    ZSTDGPU_KERNEL(InitCopyLiteralGroups)           \
     ZSTDGPU_KERNEL(InitFseTable)                    \
     ZSTDGPU_KERNEL(InitHuffmanTable)                \
     ZSTDGPU_KERNEL(InitHuffmanTableAndDecompressLiterals) \
@@ -725,6 +729,7 @@ static const zstdgpu_CompiledShader kzstdgpu_CompiledShaders [] =
     ZSTDGPU_KERNEL_SCOPE_X(FinaliseSequenceOffsets              , L"Finalise Sequence Offsets"  )   \
     ZSTDGPU_KERNEL_SCOPE_X(ComputeDestBlockOffsets              , L"Compute Dest Block Offsets" )   \
     ZSTDGPU_KERNEL_SCOPE_X(UpdateDispatchArgs_AfterDecompressSeq, L"UpdateDispatchArgs:: After Decompress Sequences")  \
+    ZSTDGPU_KERNEL_SCOPE_X(InitCopyLiteralGroups                , L"Init Copy Literal Groups"   )   \
     ZSTDGPU_KERNEL_SCOPE_X(ExecuteMatches                       , L"Execute Matches"            )   \
     ZSTDGPU_KERNEL_SCOPE_X(ExecuteSequences                     , L"ExecuteSequences"           )   \
     ZSTDGPU_KERNEL_SCOPE_X(CopyBlockAndLiteralBytes             , L"Copy Block/Literal Bytes"   )   \
@@ -1483,7 +1488,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_GetGpuMemoryRequirement(uint64_t *outDefaultHeapByt
         {
             uint32_t cntLit, cntSeq;
             zstdgpu_RecomputeAndRetrieveBlockInfoConstants(&cntLit, &cntSeq, req);
-            zstdgpu_ResourceInfo_Stage_2_Init(&req->resInfo, cntLit, cntSeq, req->zstdUncompressedFramesByteCount, req->zstdUncompressedFrameCount);
+            zstdgpu_ResourceInfo_Stage_2_Init(&req->resInfo, cntLit, cntSeq, req->zstdUncompressedFramesByteCount, req->zstdUncompressedFrameCount, req->zstdCmpBlockCountMax);
         }
         *outDefaultHeapByteCount            = req->resInfo.gpuOnly_ByteCount[stageIndex];
         *outUploadHeapByteCount             = req->resInfo.cpu2Gpu_ByteCount[stageIndex];
@@ -1507,7 +1512,7 @@ static void zstdgpu_GetAllStageGpuMemoryRequirementInternal(uint64_t *outDefault
     zstdgpu_ResourceInfo_Stage_1_Init(&req->resInfo, cntUnc, cntCmp);
 
     zstdgpu_RecomputeAndRetrieveBlockInfoConstants(&cntLit, &cntSeq, req);
-    zstdgpu_ResourceInfo_Stage_2_Init(&req->resInfo, cntLit, cntSeq, req->zstdUncompressedFramesByteCount, req->zstdUncompressedFrameCount);
+    zstdgpu_ResourceInfo_Stage_2_Init(&req->resInfo, cntLit, cntSeq, req->zstdUncompressedFramesByteCount, req->zstdUncompressedFrameCount, req->zstdCmpBlockCountMax);
 
     *outDefaultHeapByteCount    = req->resInfo.gpuOnly_ByteCount[0]
                                 + req->resInfo.gpuOnly_ByteCount[1]
@@ -1802,7 +1807,7 @@ ZSTDGPU_ENUM(Status) zstdgpu_SubmitWithInteralMemory(zstdgpu_PerRequestContext r
         {
             uint32_t cntLit, cntSeq;
             zstdgpu_RecomputeAndRetrieveBlockInfoConstants(&cntLit, &cntSeq, req);
-            zstdgpu_ResourceInfo_Stage_2_Init(&req->resInfo, cntLit, cntSeq, req->zstdUncompressedFramesByteCount, req->zstdUncompressedFrameCount);
+            zstdgpu_ResourceInfo_Stage_2_Init(&req->resInfo, cntLit, cntSeq, req->zstdUncompressedFramesByteCount, req->zstdUncompressedFrameCount, req->zstdCmpBlockCountMax);
         }
 
         // NOTE(pamartis): if at least one heap from a given stage is too small, release all heaps and recreate
@@ -2737,6 +2742,18 @@ void zstdgpu_SubmitStage2(zstdgpu_PerRequestContext req, ID3D12GraphicsCommandLi
         PIXEndEvent(cmdList);
     }
 
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+    {
+        PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Init Copy Literal Groups]");
+        zstdgpu_Bind_InitCopyLiteralGroups(cmdList, tracker, req->srts, req->resData.gpuOnly);
+        // NOTE: Slots 0 (tgOffset) and 1 (workItemCount) are set by command signature via indirect dispatch
+
+        ZSTDGPU_KERNEL_SCOPE(InitCopyLiteralGroups, cmdList,
+            zstdgpu_DispatchIndirect(cmdList, InitCopyLiteralGroups, InitCopyLiteralGroups);
+        );
+        PIXEndEvent(cmdList);
+    }
+#endif
     {
         PIXBeginEvent(cmdList, PIX_COLOR_DEFAULT, L"[Execute Sequences]");
         zstdgpu_Bind_ExecuteSequences(cmdList, tracker, req->srts, req->resData.gpuOnly);
@@ -2791,6 +2808,7 @@ ZSTDGPU_API void zstdgpu_ReadbackGpuResults(zstdgpu_PerRequestContext req, ID3D1
 
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, BlockToCopyGroupPrefix, ShaderCopyRead);
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, BlocksUncRefs, ShaderCopyRead);
+        zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, SeqStreamToRef2, ShaderCopyRead);
 
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, HufWIdToHufLitId, ShaderCopyRead);
         zstdgpu_BarrierTracker_ExternAccess(tracker, &req->resData.gpuOnly, HufLitIdToLitStreamId, ShaderCopyRead);

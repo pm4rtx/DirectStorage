@@ -65,7 +65,7 @@ extern "C"
 }
 
 #include "zstdgpu_reference_store.h"
-#include "zstdgpu_shaders.h"
+#include "zstdgpu_shaders_extra.h"
 #include "zstdgpu.h"
 
 #include "platform/zstdgpu_demo_platform.h"
@@ -191,6 +191,9 @@ static const int16_t kzstdgpuFseProbsDefault[] =
 #include ".generated/ZstdGpuSrt_FinaliseSequenceOffsets.h"
 #include ".generated/ZstdGpuSrt_ComputeDestBlockOffsets.h"
 #include ".generated/ZstdGpuSrt_CopyBlockBytes.h"
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+#include ".generated/ZstdGpuSrt_InitCopyLiteralGroups.h"
+#endif
 #include ".generated/ZstdGpuSrt_ExecuteSequences.h"
 
 #define VALIDATE(name, data) ZSTDGPU_ASSERT(ZSTDGPU_ENUM_CONST(Validate_Success) == zstdgpu_ReferenceStore_Validate_##name(data))
@@ -787,7 +790,7 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
     }
     const uint32_t literalCount = CNTRS(HUF_Streams_DecodedBytes);
     const uint32_t sequenceCount = CNTRS(Seq_Streams_DecodedItems);
-    zstdgpu_ResourceInfo_Stage_2_Init(&zstdInfo, literalCount, sequenceCount, zstdUncompressedFramesByteCount, zstdFrameCount);
+    zstdgpu_ResourceInfo_Stage_2_Init(&zstdInfo, literalCount, sequenceCount, zstdUncompressedFramesByteCount, zstdFrameCount, zstdCmpBlockCount);
     zstdgpu_ResourceDataCpu_InitFromHeap(&zstdCpu, &zstdInfo);
 
     // NOTE(pamartis): output frame references are external resources, so `InitFromHeap` doesn't allocate them
@@ -992,6 +995,16 @@ static void zstdgpu_Validate_GpuDecompressOnCpu(zstdgpu_ResourceDataCpu & zstdCp
     }
 
     CNTRS(Frames_ExecuteSequences) = 0;
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+    {
+        zstdgpu_InitCopyLiteralGroups_SRT srt;
+        zstdgpu_Srt_Fill(srt, zstdCpu, /* tgOffset */0, /* workItemCount */CNTRS(CopyLiteralGroups));
+        for (uint32_t i = 0; i < CNTRS(CopyLiteralGroups); ++i)
+        {
+            zstdgpu_ShaderEntry_InitCopyLiteralGroups(srt, i);
+        }
+    }
+#endif
     {
         zstdgpu_ExecuteSequences_SRT srt;
         zstdgpu_Srt_Fill(srt, zstdCpu);
