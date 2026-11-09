@@ -93,7 +93,7 @@ void zstdgpu_ReferenceStore_AllocateMemory(void)
 {
     zstdgpu_ResourceInfo_Stage_0_Init(&GZstdInfo, GFrameCount, GZstdDataSize, 0);
     zstdgpu_ResourceInfo_Stage_1_Init(&GZstdInfo, GBlockCountUNC, GBlockCountCMP);
-    zstdgpu_ResourceInfo_Stage_2_Init(&GZstdInfo, 4 * 1024 * 1024 /*literal count*/, 4 * 1024 * 1024 /*sequence count*/, 0, 0);
+    zstdgpu_ResourceInfo_Stage_2_Init(&GZstdInfo, 4 * 1024 * 1024 /*literal count*/, 4 * 1024 * 1024 /*sequence count*/, 0, 0, GBlockCountCMP);
 
     zstdgpu_ResourceDataCpu_InitZero(&GZstd);
     zstdgpu_ResourceDataCpu_InitFromHeap(&GZstd, &GZstdInfo);
@@ -1073,6 +1073,10 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_DecompressedSequen
     const zstdgpu_ResourceDataCpu *tstData = resourceDataCpu;
     const zstdgpu_ResourceDataCpu *refData = &GZstd;
 
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+    uint32_t expectedLitGroupPrfx = 0;
+#endif
+
     for (uint32_t i = 0; i < GBlockCountCMP; ++i)
     {
         if (refData->GlobalBlockIndexPerCmpBlock[i] != tstData->GlobalBlockIndexPerCmpBlock[i])
@@ -1099,6 +1103,11 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_DecompressedSequen
 
             if (tstSeqSteamIndex == ~0u)
                 return ZSTDGPU_ENUM_CONST(Validate_Failed);
+
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+            if (tstData->SeqStreamToLitCopyGroupPrefix[tstSeqSteamIndex] != expectedLitGroupPrfx)
+                return ZSTDGPU_ENUM_CONST(Validate_Failed);
+#endif
 
             if (refData->PerSeqStreamFinalOffset1[refSeqSteamIndex] != tstData->PerSeqStreamFinalOffset1[tstSeqSteamIndex])
                 return ZSTDGPU_ENUM_CONST(Validate_Failed);
@@ -1187,6 +1196,10 @@ ZSTDGPU_ENUM(Validate_Result) zstdgpu_ReferenceStore_Validate_DecompressedSequen
                 // NOTE: RLE literals contain actual symbol instead of offset
                 if (tstCopyRef->offs != (zstdgpu_IsLitTypeRle(litType) ? tstLit->offs : tstLit->offs + llenSum))
                     return ZSTDGPU_ENUM_CONST(Validate_Failed);
+
+#if ZSTDGPU_USE_PARALLEL_LITERALS
+                expectedLitGroupPrfx += ZSTDGPU_TG_COUNT(llenSum, kzstdgpu_CopyLiteralBytes_BytesPerTGroup);
+#endif
             }
 
         }

@@ -39,6 +39,7 @@
     <ClInclude Include="zstdgpu_reference_store.h" />
     <ClInclude Include="zstdgpu_resources.h" />
     <ClInclude Include="zstdgpu_shaders.h" />
+    <ClInclude Include="zstdgpu_shaders_extra.h" />
     <ClInclude Include="zstdgpu_shared_structs.h" />
     <ClInclude Include="zstdgpu_structs.h" />
   </ItemGroup>

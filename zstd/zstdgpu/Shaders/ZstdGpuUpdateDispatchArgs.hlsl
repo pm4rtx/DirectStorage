@@ -76,6 +76,7 @@ void main()
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_FinaliseSequenceOffsets,  srt.inoutCounters[0].Seq_Streams_DecodedItems, kzstdgpu_TgSizeX_FinaliseSequenceOffsets);
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_PrefixSequenceOffsets,    srt.inoutCounters[0].Seq_Streams,              kzstdgpu_TgSizeX_PrefixSequenceOffsets);
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_PropagateFseIndex,        srt.inoutCounters[0].Seq_Streams,              kzstdgpu_TgSizeX_PropagateFseIndex);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_Prefix_SeqBlockCount,     srt.inoutCounters[0].Seq_Streams,              kzstdgpu_TgSizeX_PrefixSum);
 
         const uint32_t predicateMask = 0
                                      | (litByteCount > srt.litByteCountMax ? (1u << 3u) : 0u)
@@ -92,5 +93,7 @@ void main()
     {
         // The number of Groups required for `CopyBlockBytes` is only calculated after `DecompressSequences`
         zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_CopyBlockBytes, srt.inoutCounters[0].CopyBlockGroups, 1);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_CopyLiteralBytes, srt.inoutCounters[0].CopyLiteralGroups, 1);
+        zstdgpu_EmitDispatch(srt.inoutDispatchArgs, srt.inoutDispatchCnts, kzstdgpu_DispatchSlot_InitCopyLiteralGroups, srt.inoutCounters[0].CopyLiteralGroups, kzstdgpu_TgSizeX_InitCopyLiteralGroups);
     }
 }
